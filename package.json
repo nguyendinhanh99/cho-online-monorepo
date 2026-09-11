@@ -13,6 +13,7 @@
     "build:admin": "pnpm --filter admin build"
   },
   "devDependencies": {
+    "next": "16.3.1",
     "zustand": "^5.0.15"
   }
 }
