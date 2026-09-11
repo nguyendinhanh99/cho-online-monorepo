@@ -1,0 +1,18 @@
+{
+  "name": "cho-online-monorepo",
+  "private": true,
+  "scripts": {
+    "dev:customer": "pnpm --filter customer dev",
+    "dev:merchant": "pnpm --filter merchant dev",
+    "dev:shipper": "pnpm --filter shipper dev",
+    "dev:admin": "pnpm --filter admin dev",
+    "dev:all": "pnpm --parallel --filter \"./apps/*\" dev",
+    "build:customer": "pnpm --filter customer build",
+    "build:merchant": "pnpm --filter merchant build",
+    "build:shipper": "pnpm --filter shipper build",
+    "build:admin": "pnpm --filter admin build"
+  },
+  "devDependencies": {
+    "zustand": "^5.0.15"
+  }
+}
