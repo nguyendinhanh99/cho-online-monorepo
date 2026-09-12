@@ -61,58 +61,6 @@ export function AppHeader() {
         </div>
       )}
 
-      {/* thanh HEADER CHÍNH */}
-      <div className="px-3.5 py-2.5 flex items-center justify-between gap-3">
-        {/* Vị trí giao hàng với Hover effect */}
-        <button
-          type="button"
-          className="flex items-center gap-2.5 text-left group rounded-xl p-1 -ml-1 hover:bg-stone-50 transition cursor-pointer"
-        >
-          <div className="w-8 h-8 rounded-full bg-orange-50 border border-orange-200/60 flex items-center justify-center text-orange-600 text-sm shrink-0 shadow-2xs group-hover:scale-105 transition-transform">
-            📍
-          </div>
-          <div className="min-w-0">
-            <div className="flex items-center gap-1">
-              <span className="text-[9px] font-bold text-stone-400 uppercase tracking-wider block leading-none">
-                GIAO ĐẾN
-              </span>
-              <span className="text-[9px] text-orange-600 font-extrabold leading-none">
-                ▼
-              </span>
-            </div>
-            <h1 className="text-xs font-black text-stone-800 leading-tight truncate group-hover:text-orange-600 transition-colors mt-0.5">
-              Hà Tĩnh, Việt Nam
-            </h1>
-          </div>
-        </button>
-
-        {/* Hiển thị Tên User hoặc Nút Đăng Nhập */}
-        <div>
-          {user ? (
-            <Link
-              href="/profile"
-              className="flex items-center gap-2 bg-emerald-50/80 hover:bg-emerald-100/80 text-emerald-900 px-3 py-1.5 rounded-full border border-emerald-200/80 text-xs font-bold transition shadow-2xs active:scale-95"
-            >
-              <span className="max-w-[100px] sm:max-w-[140px] truncate">
-                {user.displayName || user.phoneNumber || "Thành viên"}
-              </span>
-              <div className="w-5 h-5 rounded-full bg-emerald-600 text-white flex items-center justify-center text-[10px] shrink-0 font-bold shadow-2xs">
-                ✓
-              </div>
-            </Link>
-          ) : (
-            <Link
-              href="/login?redirectTo=/checkout"
-              className="flex items-center gap-2 bg-stone-100 hover:bg-stone-200/80 text-stone-700 px-3 py-1.5 rounded-full text-xs font-bold transition border border-stone-200/80 shadow-2xs active:scale-95"
-            >
-              <span>Tài khoản</span>
-              <div className="w-5 h-5 rounded-full bg-stone-800 text-white flex items-center justify-center text-[10px] shrink-0 font-bold shadow-2xs">
-                👤
-              </div>
-            </Link>
-          )}
-        </div>
-      </div>
     </header>
   );
 }

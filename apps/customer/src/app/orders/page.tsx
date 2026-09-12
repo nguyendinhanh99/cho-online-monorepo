@@ -148,7 +148,10 @@ export default function OrdersPage() {
   const [driverComment, setDriverComment] = useState<string>("");
   const [submittingReview, setSubmittingReview] = useState<boolean>(false);
 
+  // Lấy các hàm tương tác với giỏ hàng từ useCartStore
   const addItemToCart = useCartStore((state) => state.addItem);
+  const setSelectedMerchantId = useCartStore((state) => state.setSelectedMerchantId);
+  const openCart = useCartStore((state) => state.openCart);
 
   useEffect(() => {
     let unsubscribeSnapshot: () => void;
@@ -383,7 +386,7 @@ export default function OrdersPage() {
   if (loading) {
     return (
       <div className="p-8 text-center space-y-3 max-w-lg mx-auto my-12">
-        <div className="w-8 h-8 border-4 border-[#ee4d2d] border-t-transparent rounded-full animate-spin mx-auto"></div>
+        <div className="w-8 h-8 border-4 border-[#ee4d2d] border-[#ee4d2d] border-t-transparent rounded-full animate-spin mx-auto"></div>
         <p className="text-xs font-bold text-stone-400">
           Đang đồng bộ đơn hàng của bạn...
         </p>
@@ -852,33 +855,49 @@ export default function OrdersPage() {
                         </button>
                       ))}
 
-                    {/* Nút ĐẶT LẠI */}
+                    {/* Nút ĐẶT LẠI - TỰ ĐỘNG CHỌN QUÁN & MỞ GIỎ HÀNG THANH TOÁN */}
                     <button
                       type="button"
                       onClick={() => {
                         if (!order.items || order.items.length === 0) return;
 
+                        const targetMerchantId =
+                          order.merchantId ||
+                          (typeof order.items[0] !== "string"
+                            ? order.items[0]?.merchantId
+                            : "") ||
+                          "default_merchant";
+
                         order.items.forEach((item) => {
                           const isString = typeof item === "string";
-                          addItemToCart({
-                            id: isString ? `reorder-${Date.now()}` : item.id,
-                            name: isString ? item : item.name,
-                            price: isString ? 0 : item.price || 0,
-                            unit: "món",
-                            category: "fruit",
-                            imageUrl: isString
-                              ? ""
-                              : item.imageUrl || item.image || "",
-                            isAvailable: true,
-                            merchantId: isString
-                              ? order.merchantId || ""
-                              : item.merchantId || order.merchantId || "",
-                            merchantCode: isString
-                              ? order.merchantCode || ""
-                              : item.merchantCode || order.merchantCode || "",
-                          } as any);
+                          const qty = isString ? 1 : item.quantity || 1;
+
+                          for (let i = 0; i < qty; i++) {
+                            addItemToCart({
+                              id: isString ? `reorder-${Date.now()}` : item.id,
+                              name: isString ? item : item.name,
+                              price: isString ? 0 : item.price || 0,
+                              unit: "món",
+                              category: "fruit",
+                              imageUrl: isString
+                                ? ""
+                                : item.imageUrl || item.image || "",
+                              isAvailable: true,
+                              merchantId: targetMerchantId,
+                              merchantCode: isString
+                                ? order.merchantCode || ""
+                                : item.merchantCode || order.merchantCode || "",
+                            } as any);
+                          }
                         });
-                        showToast("🎉 Đã thêm tất cả món vào giỏ hàng!", "success");
+
+                        // Tự động chọn quán này trong giỏ hàng và bật drawer giỏ hàng lên
+                        if (targetMerchantId) {
+                          setSelectedMerchantId(targetMerchantId);
+                        }
+                        openCart();
+
+                        showToast("🎉 Đã thêm món vào giỏ hàng!", "success");
                       }}
                       className="bg-white border border-stone-300 hover:border-orange-300 text-stone-700 font-bold px-3 py-1.5 rounded-xl text-xs transition active:scale-95 cursor-pointer shadow-2xs hover:text-[#ee4d2d] flex items-center gap-1.5"
                     >

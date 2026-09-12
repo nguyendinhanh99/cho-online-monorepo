@@ -22,7 +22,7 @@ const parseDistanceToKm = (distanceStr: string = "1.0 km"): number => {
 };
 
 /**
- * Thuật toán tính Phí vận chuyển chuẩn hệ thống TMĐT Hà Tĩnh (Đã loại bỏ giảm phí ship từ sàn)
+ * Thuật toán tính Phí vận chuyển chuẩn hệ thống TMĐT Hà Tĩnh
  */
 const calculateShippingFeeDetails = (
   distanceKm: number = 1,
@@ -30,7 +30,7 @@ const calculateShippingFeeDetails = (
   totalItemsCount: number = 1
 ) => {
   let baseFee = 0;
-  const discount = 0; // 🚫 KHÔNG GIẢM PHÍ SHIP TỪ SÀN NỮA (Set về 0)
+  const discount = 0; // KHÔNG GIẢM PHÍ SHIP TỪ SÀN NỮA
 
   if (distanceKm <= 1) {
     baseFee = 14000;
@@ -92,7 +92,10 @@ export function CartDrawer() {
     updateQuantity,
     removeItem,
     clearCart,
+    selectedMerchantId,
+    setSelectedMerchantId,
     getTotalPrice,
+    getTotalItems,
   } = useCartStore();
 
   const formatCurrency = (amount: number) => {
@@ -112,84 +115,105 @@ export function CartDrawer() {
     updateQuantity(prod.id, -1);
   };
 
-  const {
-    groupedItems,
-    shopList,
-    hasMultipleShops,
-    totalItemsCount,
-    rawTotalPrice,
-    activeShopData,
-    shipCalculation,
-    finalShippingFee,
-    finalTotalPrice,
-    totalSavings,
-  } = useMemo(() => {
-    const rawTotalPrice = getTotalPrice();
-    const totalItemsCount = items.reduce((sum, i) => sum + i.quantity, 0);
+  // 1. Gom nhóm danh sách mặt hàng theo merchantId
+  const groupedMerchants = useMemo(() => {
+    const map: Record<
+      string,
+      {
+        merchantId: string;
+        shopName: string;
+        distanceStr: string;
+        distanceKm: number;
+        products: typeof items;
+      }
+    > = {};
 
-    const groupedItems = items.reduce((acc, item) => {
+    items.forEach((item) => {
       const prod = (item.product || item) as any;
-      const shopName = prod.shopName || "Cửa hàng";
+      const mId = prod.merchantId || "default_merchant";
+      const shopName = prod.merchantName || prod.shopName || "Cửa hàng";
       const rawDistance = prod.distance || "1.0 km";
       const parsedDistance = parseDistanceToKm(rawDistance);
 
-      if (!acc[shopName]) {
-        acc[shopName] = {
-          products: [],
-          distanceKm: parsedDistance,
+      if (!map[mId]) {
+        map[mId] = {
+          merchantId: mId,
+          shopName,
           distanceStr: rawDistance,
+          distanceKm: parsedDistance,
+          products: [],
         };
       }
-      acc[shopName].products.push(item);
-      return acc;
-    }, {} as Record<string, { products: typeof items; distanceKm: number; distanceStr: string }>);
+      map[mId].products.push(item);
+    });
 
-    const shopList = Object.keys(groupedItems);
-    const hasMultipleShops = shopList.length > 1;
-    const activeShopData = shopList.length === 1 ? groupedItems[shopList[0]] : null;
+    return map;
+  }, [items]);
 
-    const currentDate = new Date();
-    const shipCalculation = calculateShippingFeeDetails(
-      activeShopData?.distanceKm || 1,
-      currentDate,
-      totalItemsCount
+  const merchantList = Object.values(groupedMerchants);
+
+  // 2. Tự động xác định Cửa hàng đang được chọn (Radio Active)
+  const activeMerchantId = useMemo(() => {
+    if (merchantList.length === 0) return null;
+    if (selectedMerchantId && groupedMerchants[selectedMerchantId]) {
+      return selectedMerchantId;
+    }
+    return merchantList[0].merchantId;
+  }, [selectedMerchantId, groupedMerchants, merchantList]);
+
+  // 3. Thông tin chi tiết về Cửa hàng đang chọn
+  const activeMerchantData = activeMerchantId ? groupedMerchants[activeMerchantId] : null;
+  const activeItems = activeMerchantData ? activeMerchantData.products : [];
+
+  const rawTotalPrice = useMemo(() => {
+    return activeMerchantId ? getTotalPrice(activeMerchantId) : 0;
+  }, [activeMerchantId, getTotalPrice, items]);
+
+  const activeItemsCount = useMemo(() => {
+    return activeMerchantId ? getTotalItems(activeMerchantId) : 0;
+  }, [activeMerchantId, getTotalItems, items]);
+
+  // 4. Tính toán Phí Vận Chuyển riêng biệt cho Cửa hàng được chọn
+  const shipCalculation = useMemo(() => {
+    if (!activeMerchantData) {
+      return {
+        baseFee: 0,
+        timeSurcharge: 0,
+        bulkSurcharge: 0,
+        discount: 0,
+        finalFee: 0,
+        isSplitOrder: false,
+      };
+    }
+    return calculateShippingFeeDetails(
+      activeMerchantData.distanceKm,
+      new Date(),
+      activeItemsCount
     );
+  }, [activeMerchantData, activeItemsCount]);
 
-    const finalShippingFee = activeShopData ? shipCalculation.finalFee : 0;
-    const finalTotalPrice = rawTotalPrice + finalShippingFee;
+  const finalShippingFee = shipCalculation.finalFee;
+  const finalTotalPrice = rawTotalPrice + finalShippingFee;
 
-    // Chỉ tính tiết kiệm tiền món (Nếu sản phẩm giảm giá)
-    const totalProductSavings = items.reduce((sum, item) => {
+  // 5. Tính số tiền tiết kiệm được (Đã ép kiểu as any để sửa lỗi đỏ TypeScript)
+  const totalSavings = useMemo(() => {
+    return activeItems.reduce((sum, item) => {
       const prod = (item.product || item) as any;
       if (prod.originalPrice && prod.originalPrice > prod.price) {
         return sum + (prod.originalPrice - prod.price) * item.quantity;
       }
       return sum;
     }, 0);
-
-    const totalSavings = totalProductSavings; // Đã loại bỏ shipCalculation.discount
-
-    return {
-      groupedItems,
-      shopList,
-      hasMultipleShops,
-      totalItemsCount,
-      rawTotalPrice,
-      activeShopData,
-      shipCalculation,
-      finalShippingFee,
-      finalTotalPrice,
-      totalSavings,
-      currentDate,
-    };
-  }, [items, getTotalPrice]);
+  }, [activeItems]);
 
   if (!isOpen) return null;
 
   const handleCheckout = () => {
-    if (hasMultipleShops) return;
+    if (!activeMerchantId) return;
 
+    setSelectedMerchantId(activeMerchantId);
     closeCart();
+
     if (!isUserLoggedIn()) {
       router.push("/login?redirectTo=/checkout");
     } else {
@@ -202,7 +226,6 @@ export function CartDrawer() {
       <div className="absolute inset-0" onClick={closeCart} />
 
       <div className="relative z-10 w-full max-w-md bg-stone-50 h-full flex flex-col shadow-2xl animate-in slide-in-from-right duration-300">
-
         {/* HEADER */}
         <div className="p-4 bg-white border-b border-stone-200/80 flex items-center justify-between sticky top-0 z-10">
           <div className="flex items-center gap-2.5">
@@ -212,7 +235,7 @@ export function CartDrawer() {
             <div>
               <h3 className="font-extrabold text-stone-900 text-sm">Giỏ hàng của bạn</h3>
               <p className="text-[11px] text-stone-500 font-medium">
-                {totalItemsCount} món trong giỏ
+                {items.reduce((acc, i) => acc + i.quantity, 0)} món trong giỏ ({merchantList.length} quán)
               </p>
             </div>
           </div>
@@ -238,30 +261,32 @@ export function CartDrawer() {
           </div>
         </div>
 
-        {/* THÔNG BÁO TIẾT KIỆM NỔI BẬT */}
-        {totalSavings > 0 && !hasMultipleShops && (
+        {/* THÔNG BÁO TIẾT KIỆM */}
+        {totalSavings > 0 && (
           <div className="bg-gradient-to-r from-emerald-600 to-teal-600 px-4 py-2.5 text-white flex items-center justify-between text-xs shadow-inner">
             <div className="flex items-center gap-2 font-medium">
               <span className="text-base leading-none">🎉</span>
-              <span>Bạn tiết kiệm được <strong>{formatCurrency(totalSavings)}</strong> cho đơn này!</span>
+              <span>
+                Bạn tiết kiệm được <strong>{formatCurrency(totalSavings)}</strong> cho đơn này!
+              </span>
             </div>
           </div>
         )}
 
-        {/* CẢNH BÁO NHIỀU SHOP */}
-        {hasMultipleShops && (
-          <div className="bg-red-50 border-b border-red-200 p-3 text-xs text-red-700 flex items-start gap-2 animate-pulse">
-            <span className="text-base leading-none">⚠️</span>
+        {/* CẢNH BÁO / HƯỚNG DẪN KHI CÓ NHIỀU QUÁN */}
+        {merchantList.length > 1 && (
+          <div className="bg-amber-50 border-b border-amber-200 p-3 text-xs text-amber-800 flex items-start gap-2">
+            <span className="text-base leading-none">💡</span>
             <div>
-              <p className="font-bold">Chỉ hỗ trợ đặt món từ 1 Cửa hàng/lần</p>
-              <p className="text-[11px] text-red-600 mt-0.5">
-                Giỏ hàng của bạn đang có sản phẩm từ {shopList.length} quán. Vui lòng xóa bớt để chỉ giữ lại 1 quán duy nhất.
+              <p className="font-bold">Giỏ hàng có món từ {merchantList.length} Quán khác nhau</p>
+              <p className="text-[11px] text-amber-700 mt-0.5">
+                Vui lòng chọn nút tròn bên dưới quán bạn muốn tiến hành thanh toán trước.
               </p>
             </div>
           </div>
         )}
 
-        {/* DANH SÁCH MÓN */}
+        {/* DANH SÁCH MÓN PHÂN THEO QUÁN */}
         <div className="flex-1 overflow-y-auto p-3 space-y-4">
           {items.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center p-6 space-y-3">
@@ -270,7 +295,9 @@ export function CartDrawer() {
               </div>
               <div>
                 <h4 className="text-sm font-bold text-stone-800">Giỏ hàng chưa có món nào</h4>
-                <p className="text-xs text-stone-400 mt-1">Hãy chọn vài món ngon để lấp đầy cái bụng đói nhé!</p>
+                <p className="text-xs text-stone-400 mt-1">
+                  Hãy chọn vài món ngon để lấp đầy cái bụng đói nhé!
+                </p>
               </div>
               <button
                 type="button"
@@ -281,36 +308,54 @@ export function CartDrawer() {
               </button>
             </div>
           ) : (
-            Object.entries(groupedItems).map(([shopName, shopData]) => {
+            merchantList.map((merchantGroup) => {
+              const isSelected = merchantGroup.merchantId === activeMerchantId;
               const shopShip = calculateShippingFeeDetails(
-                shopData.distanceKm,
+                merchantGroup.distanceKm,
                 new Date(),
-                totalItemsCount
+                merchantGroup.products.reduce((acc, i) => acc + i.quantity, 0)
               );
 
               return (
                 <div
-                  key={shopName}
-                  className={`bg-white rounded-2xl border p-3.5 shadow-xs space-y-3 transition-colors ${hasMultipleShops ? "border-red-300 ring-1 ring-red-100" : "border-stone-200/70"
-                    }`}
+                  key={merchantGroup.merchantId}
+                  className={`bg-white rounded-2xl border p-3.5 shadow-xs space-y-3 transition-all ${
+                    isSelected
+                      ? "border-orange-500 ring-2 ring-orange-100"
+                      : "border-stone-200/70 opacity-75 hover:opacity-100"
+                  }`}
                 >
+                  {/* THANH THÔNG TIN VÀ CHỌN SHOP */}
                   <div className="flex items-center justify-between pb-2.5 border-b border-stone-100">
-                    <div className="flex items-center gap-1.5 min-w-0">
+                    <label className="flex items-center gap-2.5 min-w-0 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="selectedMerchant"
+                        checked={isSelected}
+                        onChange={() => setSelectedMerchantId(merchantGroup.merchantId)}
+                        className="w-4 h-4 accent-[#ee4d2d] cursor-pointer"
+                      />
                       <span className="text-sm">🏪</span>
-                      <span className="text-xs font-bold text-stone-900 truncate">{shopName}</span>
-                    </div>
+                      <span className="text-xs font-extrabold text-stone-900 truncate">
+                        {merchantGroup.shopName}
+                      </span>
+                    </label>
 
                     <div className="text-[10px] font-semibold text-stone-600 bg-stone-100 px-2.5 py-1 rounded-full shrink-0 flex items-center gap-1">
-                      <span>📍 {shopData.distanceStr}</span>
+                      <span>📍 {merchantGroup.distanceStr}</span>
                       <span className="text-stone-300">•</span>
                       <span>{formatCurrency(shopShip.finalFee)}</span>
                     </div>
                   </div>
 
+                  {/* CÁC SẢN PHẨM CỦA SHOP */}
                   <div className="space-y-3">
-                    {shopData.products.map((item) => {
+                    {merchantGroup.products.map((item) => {
                       const prod = (item.product || item) as any;
-                      const hasDiscount = prod.originalPrice && prod.originalPrice > prod.price && !String(prod.id).includes("_normal");
+                      const hasDiscount =
+                        prod.originalPrice &&
+                        prod.originalPrice > prod.price &&
+                        !String(prod.id).includes("_normal");
 
                       return (
                         <div key={prod.id} className="flex gap-3 items-center">
@@ -328,11 +373,9 @@ export function CartDrawer() {
                           </div>
 
                           <div className="flex-1 min-w-0 space-y-0.5">
-                            <div className="flex items-center gap-1.5">
-                              <h4 className="text-xs font-bold text-stone-800 truncate">
-                                {prod.name}
-                              </h4>
-                            </div>
+                            <h4 className="text-xs font-bold text-stone-800 truncate">
+                              {prod.name}
+                            </h4>
 
                             <div className="flex items-baseline gap-1.5">
                               <span className="text-xs font-extrabold text-[#ee4d2d]">
@@ -388,69 +431,65 @@ export function CartDrawer() {
           )}
         </div>
 
-        {/* FOOTER THANH TOÁN */}
-        {items.length > 0 && (
+        {/* FOOTER THANH TOÁN (TÍNH RIÊNG THEO CỬA HÀNG ĐANG CHỌN) */}
+        {items.length > 0 && activeMerchantData && (
           <div className="p-4 bg-white border-t border-stone-200/80 space-y-3 shadow-2xl">
             <div className="space-y-1.5">
               <div className="flex justify-between items-center text-xs text-stone-500">
-                <span>Tạm tính ({totalItemsCount} món):</span>
-                <span className="font-semibold text-stone-700">{formatCurrency(rawTotalPrice)}</span>
+                <span>Tạm tính ({activeItemsCount} món):</span>
+                <span className="font-semibold text-stone-700">
+                  {formatCurrency(rawTotalPrice)}
+                </span>
               </div>
 
-              {!hasMultipleShops && (
-                <div className="space-y-1 pt-1.5 border-t border-dashed border-stone-200">
-                  <div className="flex justify-between items-center text-xs text-stone-600 font-semibold">
-                    <span>🛵 Phí giao hàng TMĐT:</span>
-                    <span className="text-stone-800">{formatCurrency(finalShippingFee)}</span>
-                  </div>
-
-                  <div className="pl-2 space-y-0.5 text-[10px] text-stone-400 border-l border-stone-200">
-                    <div className="flex justify-between">
-                      <span>• Phí gốc ({activeShopData?.distanceStr || "1km"}):</span>
-                      <span>{formatCurrency(shipCalculation.baseFee)}</span>
-                    </div>
-                    {shipCalculation.timeSurcharge > 0 && (
-                      <div className="flex justify-between text-amber-600">
-                        <span>• Phụ phí khung giờ cao điểm:</span>
-                        <span>+{formatCurrency(shipCalculation.timeSurcharge)}</span>
-                      </div>
-                    )}
-                    {shipCalculation.bulkSurcharge > 0 && (
-                      <div className="flex justify-between text-amber-600">
-                        <span>• Phụ phí cồng kềnh:</span>
-                        <span>+{formatCurrency(shipCalculation.bulkSurcharge)}</span>
-                      </div>
-                    )}
-                  </div>
+              <div className="space-y-1 pt-1.5 border-t border-dashed border-stone-200">
+                <div className="flex justify-between items-center text-xs text-stone-600 font-semibold">
+                  <span>🛵 Phí giao hàng TMĐT:</span>
+                  <span className="text-stone-800">{formatCurrency(finalShippingFee)}</span>
                 </div>
-              )}
+
+                <div className="pl-2 space-y-0.5 text-[10px] text-stone-400 border-l border-stone-200">
+                  <div className="flex justify-between">
+                    <span>• Phí gốc ({activeMerchantData.distanceStr}):</span>
+                    <span>{formatCurrency(shipCalculation.baseFee)}</span>
+                  </div>
+                  {shipCalculation.timeSurcharge > 0 && (
+                    <div className="flex justify-between text-amber-600">
+                      <span>• Phụ phí khung giờ cao điểm:</span>
+                      <span>+{formatCurrency(shipCalculation.timeSurcharge)}</span>
+                    </div>
+                  )}
+                  {shipCalculation.bulkSurcharge > 0 && (
+                    <div className="flex justify-between text-amber-600">
+                      <span>• Phụ phí cồng kềnh:</span>
+                      <span>+{formatCurrency(shipCalculation.bulkSurcharge)}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
 
               <div className="flex justify-between items-baseline pt-2 border-t border-stone-200">
                 <div>
                   <span className="text-sm font-bold text-stone-800">Tổng thanh toán:</span>
-                  {totalSavings > 0 && !hasMultipleShops && (
+                  {totalSavings > 0 && (
                     <p className="text-[10px] text-emerald-600 font-semibold mt-0.5">
                       Đã tiết kiệm {formatCurrency(totalSavings)}
                     </p>
                   )}
                 </div>
                 <span className="text-xl font-black text-[#ee4d2d]">
-                  {hasMultipleShops ? formatCurrency(rawTotalPrice) : formatCurrency(finalTotalPrice)}
+                  {formatCurrency(finalTotalPrice)}
                 </span>
               </div>
             </div>
 
             <button
               type="button"
-              disabled={hasMultipleShops}
               onClick={handleCheckout}
-              className={`w-full font-extrabold py-3.5 rounded-xl shadow-lg transition flex items-center justify-center gap-2 text-xs uppercase tracking-wider cursor-pointer ${hasMultipleShops
-                  ? "bg-stone-300 text-stone-500 cursor-not-allowed shadow-none"
-                  : "bg-gradient-to-r from-orange-500 to-[#ee4d2d] hover:opacity-95 text-white shadow-orange-500/25 active:scale-[0.98]"
-                }`}
+              className="w-full font-extrabold py-3.5 rounded-xl shadow-lg transition flex items-center justify-center gap-2 text-xs uppercase tracking-wider cursor-pointer bg-gradient-to-r from-orange-500 to-[#ee4d2d] hover:opacity-95 text-white shadow-orange-500/25 active:scale-[0.98]"
             >
-              <span>{hasMultipleShops ? "Vui lòng chọn 1 Cửa hàng" : "Tiến hành thanh toán"}</span>
-              {!hasMultipleShops && <span>➔</span>}
+              <span>Thanh toán đơn {activeMerchantData.shopName}</span>
+              <span>➔</span>
             </button>
           </div>
         )}

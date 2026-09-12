@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { auth, db } from "@cho-online/firebase";
 import { onAuthStateChanged, User as FirebaseUser } from "firebase/auth";
@@ -24,12 +24,12 @@ interface ShippingOptions {
 // 🚚 Tính phí ship: 1km đầu = 14.000đ, từ km thứ 2 trở đi mỗi km +4.000đ
 const calculateShippingFee = ({ distanceKm, isRaining = false, orderTime = new Date() }: ShippingOptions): number => {
   let baseFee = 14000;
-  
+
   if (distanceKm > 1) {
     const extraKm = Math.ceil(distanceKm - 1);
     baseFee = 14000 + extraKm * 4000;
   }
-  
+
   baseFee = Math.min(baseFee, MAX_SHIPPING_FEE);
 
   // 🌧️ Phụ phí trời mưa (+3.000đ)
@@ -74,7 +74,24 @@ interface Voucher {
 
 export default function CheckoutPage() {
   const router = useRouter();
-  const { items, getTotalPrice, clearCart } = useCartStore();
+  const { items, selectedMerchantId, clearCart, clearMerchantItems } = useCartStore();
+
+  // 🛡️ Cờ kiểm tra mount để tránh lỗi Hydration
+  const [isMounted, setIsMounted] = useState(false);
+
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
+
+  // 🎯 Lọc danh sách món thuộc cửa hàng đã chọn thanh toán
+  const checkoutItems = useMemo(() => {
+    if (!selectedMerchantId) return items;
+    return items.filter((item: any) => {
+      const prod = item.product || item;
+      const itemMerchantId = prod.merchantId || prod.merchantCode || prod.shopId || "default_merchant";
+      return itemMerchantId === selectedMerchantId;
+    });
+  }, [items, selectedMerchantId]);
 
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -111,13 +128,12 @@ export default function CheckoutPage() {
           `https://api.open-meteo.com/v1/forecast?latitude=${HA_TINH_LAT}&longitude=${HA_TINH_LNG}&current=rain,weather_code`
         );
         const data = await res.json();
-        
+
         const rainAmount = data?.current?.rain || 0;
         const code = data?.current?.weather_code || 0;
 
-        // Mã WMO: 51-67, 80-82, 95-99 biểu thị các cấp độ mưa và dông
         const isRainyCode = (code >= 51 && code <= 67) || (code >= 80 && code <= 82) || code >= 95;
-        
+
         if (rainAmount > 0 || isRainyCode) {
           setIsRaining(true);
         } else {
@@ -134,12 +150,16 @@ export default function CheckoutPage() {
     checkHaTinhWeather();
   }, []);
 
+  // 🟢 Xác thực người dùng & Đồng bộ giỏ hàng với Firestore
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (!currentUser) {
+        useCartStore.getState().setUserId(null);
         router.replace("/login?redirectTo=/checkout");
       } else {
         setUser(currentUser);
+        useCartStore.getState().setUserId(currentUser.uid);
+
         if (currentUser.displayName) setFullName(currentUser.displayName);
 
         try {
@@ -174,7 +194,7 @@ export default function CheckoutPage() {
   useEffect(() => {
     const fetchVouchers = async () => {
       try {
-        const firstProduct = items[0]?.product as any;
+        const firstProduct = (checkoutItems[0]?.product || checkoutItems[0]) as any;
         const currentShopId = firstProduct?.merchantId || firstProduct?.merchantCode || firstProduct?.shopId;
 
         const querySnapshot = await getDocs(collection(db, "vouchers"));
@@ -229,8 +249,10 @@ export default function CheckoutPage() {
       }
     };
 
-    fetchVouchers();
-  }, [items]);
+    if (checkoutItems.length > 0) {
+      fetchVouchers();
+    }
+  }, [checkoutItems]);
 
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat("vi-VN", {
@@ -239,13 +261,22 @@ export default function CheckoutPage() {
     }).format(amount);
   };
 
-  const rawTotalPrice = getTotalPrice();
-  const firstProduct = (items[0]?.product as any) || {};
-
-  const rawTotalCostPrice = items.reduce((sum, item: any) => {
-    const cost = Number(item.product.costPrice || item.product.originalPrice || item.product.price) || 0;
-    return sum + cost * (Number(item.quantity) || 1);
+  // 💰 Tính toán giá trị dựa trên checkoutItems đã lọc
+  const rawTotalPrice = checkoutItems.reduce((sum, item: any) => {
+    const prod = item.product || item;
+    const price = Number(prod.price) || 0;
+    const qty = Number(item.quantity) || 1;
+    return sum + price * qty;
   }, 0);
+
+  const rawTotalCostPrice = checkoutItems.reduce((sum, item: any) => {
+    const prod = item.product || item;
+    const cost = Number(prod.costPrice || prod.originalPrice || prod.price) || 0;
+    const qty = Number(item.quantity) || 1;
+    return sum + cost * qty;
+  }, 0);
+
+  const firstProduct = (checkoutItems[0]?.product || checkoutItems[0] || {}) as any;
 
   const rawDistance = firstProduct?.distance || "100m";
   const numericDistance = parseFloat(rawDistance.replace(/[^0-9.]/g, "")) || 1.0;
@@ -253,10 +284,13 @@ export default function CheckoutPage() {
   const isMeters = /m|mét/i.test(rawDistance) && !/km/i.test(rawDistance);
   const parsedDistanceInKm = isMeters ? numericDistance / 1000 : numericDistance;
 
+  // 🕒 Tránh lệch múi giờ/giờ hệ thống bằng cách cố định mốc thời gian tính phí ship khi chưa mount
+  const currentOrderTime = isMounted ? new Date() : new Date(2026, 0, 1, 10, 0, 0);
+
   const initialShippingFee = calculateShippingFee({
     distanceKm: parsedDistanceInKm,
     isRaining,
-    orderTime: new Date(),
+    orderTime: currentOrderTime,
   });
 
   let shippingDiscountAmount = 0;
@@ -342,7 +376,7 @@ export default function CheckoutPage() {
 
   const handleOrder = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (items.length === 0 || !user) return;
+    if (checkoutItems.length === 0 || !user) return;
 
     if (!address.trim()) {
       alert("Bạn chưa cập nhật địa chỉ giao hàng!");
@@ -359,13 +393,9 @@ export default function CheckoutPage() {
     setLoading(true);
 
     try {
-      const activeMerchantItem = items.find(
-        (i: any) => i.product?.merchantId || i.product?.shopId
-      )?.product as any;
-
-      const merchantId = activeMerchantItem?.merchantId || activeMerchantItem?.shopId || firstProduct?.merchantId || firstProduct?.shopId || "";
-      const merchantCode = activeMerchantItem?.merchantCode || firstProduct?.merchantCode || "";
-      const shopName = firstProduct?.shopName || firstProduct?.storeName || "Cửa hàng";
+      const merchantId = firstProduct?.merchantId || firstProduct?.shopId || "";
+      const merchantCode = firstProduct?.merchantCode || "";
+      const shopName = firstProduct?.merchantName || firstProduct?.shopName || firstProduct?.storeName || "Cửa hàng";
       const storeAddress = firstProduct?.address || firstProduct?.storeAddress || firstProduct?.shopAddress || firstProduct?.merchantAddress || "501 Hà Huy Tập, thành phố Hà Tĩnh";
       const storePhone = firstProduct?.phone || firstProduct?.phoneNumber || "01234567899";
       const storeLat = firstProduct?.lat || HA_TINH_LAT;
@@ -419,17 +449,18 @@ export default function CheckoutPage() {
         storeLat,
         storeLng,
 
-        items: items.map((item: any) => {
-          const itemCostPrice = Number(item.product.costPrice || item.product.originalPrice || item.product.price) || 0;
+        items: checkoutItems.map((item: any) => {
+          const prod = item.product || item;
+          const itemCostPrice = Number(prod.costPrice || prod.originalPrice || prod.price) || 0;
           return {
-            id: item.product.id,
-            name: item.product.name,
-            price: Number(item.product.price) || 0,
+            id: prod.id,
+            name: prod.name,
+            price: Number(prod.price) || 0,
             costPrice: itemCostPrice,
             quantity: Number(item.quantity) || 1,
-            imageUrl: item.product.imageUrl || item.product.image || "",
-            merchantId: item.product.merchantId || merchantId,
-            merchantCode: item.product.merchantCode || merchantCode,
+            imageUrl: prod.imageUrl || prod.image || "",
+            merchantId: prod.merchantId || merchantId,
+            merchantCode: prod.merchantCode || merchantCode,
           };
         }),
       };
@@ -470,7 +501,12 @@ export default function CheckoutPage() {
         }
       }
 
-      clearCart();
+      const currentMerchantId = merchantId || selectedMerchantId;
+      if (currentMerchantId && clearMerchantItems) {
+        await clearMerchantItems(currentMerchantId);
+      } else {
+        await clearCart();
+      }
 
       if (paymentMethod === "banking") {
         router.push(`/orders/${docRef.id}/payment`);
@@ -486,26 +522,27 @@ export default function CheckoutPage() {
     }
   };
 
-  if (authLoading) {
+  // 🛡️ Ngăn chặn render khác biệt trong lần đầu SSR nếu chưa mount
+  if (!isMounted || authLoading) {
     return (
       <div className="min-h-[60vh] flex flex-col items-center justify-center space-y-3">
         <div className="w-9 h-9 border-3 border-orange-500 border-t-transparent rounded-full animate-spin" />
-        <p className="text-xs font-semibold text-slate-400">Đang xác thực thông tin...</p>
+        <p className="text-xs font-semibold text-slate-400">Đang tải trang thanh toán...</p>
       </div>
     );
   }
 
   if (!user) return null;
 
-  if (items.length === 0) {
+  if (checkoutItems.length === 0) {
     return (
       <div className="min-h-[60vh] flex flex-col items-center justify-center p-6 text-center space-y-4">
         <div className="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center text-3xl">
           🛍️
         </div>
         <div className="space-y-1">
-          <h2 className="text-base font-bold text-slate-800">Giỏ hàng của bạn đang trống</h2>
-          <p className="text-xs text-slate-400">Hãy thêm sản phẩm trước khi tiến hành thanh toán</p>
+          <h2 className="text-base font-bold text-slate-800">Không tìm thấy sản phẩm cần thanh toán</h2>
+          <p className="text-xs text-slate-400">Vui lòng quay lại giỏ hàng và chọn quán cần thanh toán</p>
         </div>
         <button
           type="button"
@@ -620,21 +657,20 @@ export default function CheckoutPage() {
             </div>
 
             {/* 🌤️ TRẠNG THÁI THỜI TIẾT HÀ TĨNH TỰ ĐỘNG */}
-            <div className={`p-2.5 rounded-xl border text-xs font-medium flex items-center justify-between ${
-              weatherLoading
+            <div className={`p-2.5 rounded-xl border text-xs font-medium flex items-center justify-between ${weatherLoading
                 ? "bg-slate-50 border-slate-200 text-slate-500"
                 : isRaining
-                ? "bg-blue-50 border-blue-200 text-blue-900"
-                : "bg-emerald-50 border-emerald-200 text-emerald-900"
-            }`}>
+                  ? "bg-blue-50 border-blue-200 text-blue-900"
+                  : "bg-emerald-50 border-emerald-200 text-emerald-900"
+              }`}>
               <div className="flex items-center gap-2">
                 <span>{weatherLoading ? "⏳" : isRaining ? "🌧️" : "☀️"}</span>
                 <span>
                   {weatherLoading
                     ? "Đang cập nhật thời tiết Hà Tĩnh..."
                     : isRaining
-                    ? "Hà Tĩnh đang có mưa (Tự động +3.000đ)"
-                    : "Thời tiết Hà Tĩnh không mưa (Không cộng phụ phí)"}
+                      ? "Hà Tĩnh đang có mưa (Tự động +3.000đ)"
+                      : "Thời tiết Hà Tĩnh không mưa (Không cộng phụ phí)"}
                 </span>
               </div>
               {!weatherLoading && (
@@ -656,7 +692,7 @@ export default function CheckoutPage() {
               Địa điểm lấy hàng
             </span>
             <p className="font-bold text-slate-800">
-              {firstProduct?.shopName || firstProduct?.storeName || "Cửa hàng đối tác"}
+              {firstProduct?.merchantName || firstProduct?.shopName || firstProduct?.storeName || "Cửa hàng đối tác"}
             </p>
           </div>
         </section>
@@ -670,7 +706,7 @@ export default function CheckoutPage() {
           >
             <div className="flex items-center gap-2">
               <span>🧺</span>
-              <span>Sản phẩm đã chọn ({items.length})</span>
+              <span>Sản phẩm đã chọn ({checkoutItems.length})</span>
             </div>
             <div className="flex items-center gap-1.5 text-slate-400 text-[11px]">
               <span>{formatCurrency(rawTotalPrice)}</span>
@@ -682,18 +718,19 @@ export default function CheckoutPage() {
 
           {showItemsList && (
             <div className="px-4 pb-4 space-y-2.5 border-t border-slate-100 pt-3">
-              {items.map((item: any) => {
-                const itemPrice = Number(item.product.price) || 0;
-                const itemOriginalPrice = Number(item.product.originalPrice || item.product.costPrice) || 0;
+              {checkoutItems.map((item: any) => {
+                const prod = item.product || item;
+                const itemPrice = Number(prod.price) || 0;
+                const itemOriginalPrice = Number(prod.originalPrice || prod.costPrice) || 0;
                 const hasDiscount = itemOriginalPrice > itemPrice;
 
                 return (
-                  <div key={item.product.id} className="flex items-center justify-between text-xs">
+                  <div key={prod.id} className="flex items-center justify-between text-xs">
                     <div className="flex items-center gap-2 truncate pr-2">
                       <span className="bg-slate-100 text-slate-600 text-[10px] font-bold px-1.5 py-0.5 rounded-md">
                         {item.quantity}x
                       </span>
-                      <span className="text-slate-700 font-medium truncate">{item.product.name}</span>
+                      <span className="text-slate-700 font-medium truncate">{prod.name}</span>
                     </div>
 
                     <div className="flex items-center gap-1.5 shrink-0">
@@ -857,13 +894,12 @@ export default function CheckoutPage() {
 
           <div className="space-y-2">
             <label
-              className={`flex items-center justify-between p-3 rounded-xl border transition ${
-                isCodDisabled
+              className={`flex items-center justify-between p-3 rounded-xl border transition ${isCodDisabled
                   ? "bg-slate-100 border-slate-200 opacity-60 cursor-not-allowed"
                   : paymentMethod === "cod"
-                  ? "bg-orange-50/50 border-orange-500 cursor-pointer"
-                  : "bg-slate-50 border-slate-100 cursor-pointer"
-              }`}
+                    ? "bg-orange-50/50 border-orange-500 cursor-pointer"
+                    : "bg-slate-50 border-slate-100 cursor-pointer"
+                }`}
             >
               <div className="flex items-center gap-2.5">
                 <input
@@ -888,11 +924,10 @@ export default function CheckoutPage() {
             </label>
 
             <label
-              className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition ${
-                paymentMethod === "banking"
+              className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition ${paymentMethod === "banking"
                   ? "bg-orange-50/50 border-orange-500"
                   : "bg-slate-50 border-slate-100"
-              }`}
+                }`}
             >
               <div className="flex items-center gap-2.5">
                 <input
@@ -914,7 +949,7 @@ export default function CheckoutPage() {
         <section className="bg-white rounded-2xl p-4 border border-slate-100 shadow-2xs space-y-2.5 text-xs">
           {/* Tiền món */}
           <div className="flex justify-between text-slate-500">
-            <span>Tiền món ({items.length}):</span>
+            <span>Tiền món ({checkoutItems.length}):</span>
             <div className="flex items-center gap-1.5">
               {rawTotalCostPrice > rawTotalPrice && (
                 <span className="line-through text-slate-400 text-[11px]">
@@ -933,7 +968,7 @@ export default function CheckoutPage() {
               baseDistanceFee = Math.min(14000 + extraKm * 4000, MAX_SHIPPING_FEE);
             }
 
-            const currentHour = new Date().getHours();
+            const currentHour = currentOrderTime.getHours();
             let peakFee = 0;
             if ((currentHour >= 11 && currentHour < 13) || (currentHour >= 18 && currentHour < 22)) {
               peakFee = 3000;
@@ -1056,27 +1091,24 @@ export default function CheckoutPage() {
               <button
                 type="button"
                 onClick={() => setActiveModalTab("ALL")}
-                className={`text-xs font-bold px-3 py-1.5 rounded-lg transition cursor-pointer ${
-                  activeModalTab === "ALL" ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                }`}
+                className={`text-xs font-bold px-3 py-1.5 rounded-lg transition cursor-pointer ${activeModalTab === "ALL" ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                  }`}
               >
                 Tất cả
               </button>
               <button
                 type="button"
                 onClick={() => setActiveModalTab("SHIPPING")}
-                className={`text-xs font-bold px-3 py-1.5 rounded-lg transition cursor-pointer ${
-                  activeModalTab === "SHIPPING" ? "bg-emerald-600 text-white" : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
-                }`}
+                className={`text-xs font-bold px-3 py-1.5 rounded-lg transition cursor-pointer ${activeModalTab === "SHIPPING" ? "bg-emerald-600 text-white" : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                  }`}
               >
                 🚚 Vận chuyển
               </button>
               <button
                 type="button"
                 onClick={() => setActiveModalTab("ORDER")}
-                className={`text-xs font-bold px-3 py-1.5 rounded-lg transition cursor-pointer ${
-                  activeModalTab === "ORDER" ? "bg-purple-600 text-white" : "bg-purple-50 text-purple-700 hover:bg-purple-100"
-                }`}
+                className={`text-xs font-bold px-3 py-1.5 rounded-lg transition cursor-pointer ${activeModalTab === "ORDER" ? "bg-purple-600 text-white" : "bg-purple-50 text-purple-700 hover:bg-purple-100"
+                  }`}
               >
                 🏪 Shop Voucher
               </button>
@@ -1099,22 +1131,20 @@ export default function CheckoutPage() {
                     <div
                       key={v.id}
                       onClick={() => isEligible && handleSelectVoucher(v)}
-                      className={`p-3.5 rounded-2xl border transition flex items-start justify-between gap-3 cursor-pointer ${
-                        isSelected
+                      className={`p-3.5 rounded-2xl border transition flex items-start justify-between gap-3 cursor-pointer ${isSelected
                           ? isShipping ? "bg-emerald-50 border-emerald-500" : "bg-purple-50 border-purple-500"
                           : isEligible
-                          ? isShipping
-                            ? "bg-white border-slate-200 hover:border-emerald-300"
-                            : "bg-white border-slate-200 hover:border-purple-300"
-                          : "bg-slate-50 border-slate-100 opacity-60 cursor-not-allowed"
-                      }`}
+                            ? isShipping
+                              ? "bg-white border-slate-200 hover:border-emerald-300"
+                              : "bg-white border-slate-200 hover:border-purple-300"
+                            : "bg-slate-50 border-slate-100 opacity-60 cursor-not-allowed"
+                        }`}
                     >
                       <div className="space-y-1">
                         <div className="flex items-center gap-2">
                           <span
-                            className={`font-mono font-bold text-[10px] px-2 py-0.5 rounded uppercase ${
-                              isShipping ? "bg-emerald-100 text-emerald-800" : "bg-purple-100 text-purple-800"
-                            }`}
+                            className={`font-mono font-bold text-[10px] px-2 py-0.5 rounded uppercase ${isShipping ? "bg-emerald-100 text-emerald-800" : "bg-purple-100 text-purple-800"
+                              }`}
                           >
                             {isShipping ? "🚚 Ship" : "🏪 Shop"}
                           </span>
@@ -1134,15 +1164,14 @@ export default function CheckoutPage() {
                       <button
                         type="button"
                         disabled={!isEligible}
-                        className={`text-xs font-bold px-3 py-1.5 rounded-xl shrink-0 transition ${
-                          isSelected
+                        className={`text-xs font-bold px-3 py-1.5 rounded-xl shrink-0 transition ${isSelected
                             ? isShipping ? "bg-emerald-600 text-white" : "bg-purple-600 text-white"
                             : isEligible
-                            ? isShipping
-                              ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
-                              : "bg-purple-50 text-purple-700 hover:bg-purple-100"
-                            : "bg-slate-200 text-slate-400"
-                        }`}
+                              ? isShipping
+                                ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                                : "bg-purple-50 text-purple-700 hover:bg-purple-100"
+                              : "bg-slate-200 text-slate-400"
+                          }`}
                       >
                         {isSelected ? "Đang dùng" : isEligible ? "Chọn mã" : "Chưa đủ ĐK"}
                       </button>

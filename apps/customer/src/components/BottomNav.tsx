@@ -2,12 +2,21 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import { useCartStore } from "../store/useCartStore";
 
 export function BottomNav() {
   const pathname = usePathname();
   const { getTotalItems, openCart } = useCartStore();
-  const totalItems = getTotalItems();
+  
+  // 🛡️ Thêm cờ kiểm tra mount để tránh lỗi HydrationMismatch
+  const [isMounted, setIsMounted] = useState(false);
+
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
+
+  const totalItems = isMounted ? getTotalItems() : 0;
 
   const navItems = [
     {
