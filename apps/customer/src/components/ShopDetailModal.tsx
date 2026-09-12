@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 
 interface Review {
   id: string;
@@ -25,7 +25,7 @@ interface Product {
   discountStock?: number | null;
   discountStartTime?: string | null;
   discountEndTime?: string | null;
-  limitPerUser?: number; // Giới hạn số lượng mua mỗi người (Mặc định = 1 cho item sale)
+  limitPerUser?: number;
   imageUrl: string;
   imageUrls: string[];
   soldCount: number;
@@ -59,7 +59,7 @@ interface ShopDetailModalProps {
   shop: Shop | null;
   distanceStr: string;
   products?: Product[];
-  cartItems?: CartItem[]; // Truyền danh sách món đang có trong giỏ để check giới hạn
+  cartItems?: CartItem[];
   onClose: () => void;
   onAddToCart?: (product: Product) => void;
   onProductClick?: (product: Product) => void;
@@ -84,6 +84,19 @@ export default function ShopDetailModal({
   const [selectedCategory, setSelectedCategory] = useState("all");
   const [filterType, setFilterType] = useState<FilterType>("all");
 
+  // ==========================================
+  // KHÓA CUỘN TRANG NỀN KHI MODAL MỞ
+  // ==========================================
+  useEffect(() => {
+    if (shop) {
+      const originalStyle = window.getComputedStyle(document.body).overflow;
+      document.body.style.overflow = "hidden";
+      return () => {
+        document.body.style.overflow = originalStyle;
+      };
+    }
+  }, [shop]);
+
   // Kiểm tra trạng thái giảm giá thực tế (Số lượng + Thời gian)
   const checkDiscountStatus = useCallback((product: Product) => {
     const hasOriginal = product.originalPrice && product.originalPrice > product.price;
@@ -95,7 +108,6 @@ export default function ShopDetailModal({
     const startTime = product.discountStartTime ? new Date(product.discountStartTime) : null;
     const endTime = product.discountEndTime ? new Date(product.discountEndTime) : null;
 
-    // Sắp mở bán
     if (startTime && now < startTime) {
       return {
         isDiscountActive: false,
@@ -105,12 +117,10 @@ export default function ShopDetailModal({
       };
     }
 
-    // Đã hết hạn sale
     if (endTime && now > endTime) {
       return { isDiscountActive: false, isUpcoming: false, currentPrice: product.originalPrice, discountPercent: 0 };
     }
 
-    // Đã hết suất sale
     if (product.discountStock !== undefined && product.discountStock !== null && product.discountStock <= 0) {
       return { isDiscountActive: false, isUpcoming: false, currentPrice: product.originalPrice, discountPercent: 0 };
     }
@@ -119,21 +129,19 @@ export default function ShopDetailModal({
     return { isDiscountActive: true, isUpcoming: false, currentPrice: product.price, discountPercent };
   }, []);
 
-  // Kiểm tra xem người dùng đã chọn mua món sale này trong giỏ chưa (Giới hạn 1 món/người)
   const isLimitReached = useCallback(
     (product: Product) => {
       const { isDiscountActive } = checkDiscountStatus(product);
       if (!isDiscountActive) return false;
 
       const itemInCart = cartItems.find((ci) => ci.product.id === product.id);
-      const limit = product.limitPerUser ?? 1; // Mặc định mỗi người mua tối đa 1 sản phẩm giảm giá
+      const limit = product.limitPerUser ?? 1;
 
       return itemInCart ? itemInCart.quantity >= limit : false;
     },
     [cartItems, checkDiscountStatus]
   );
 
-  // Format thời gian hiển thị (HH:mm)
   const formatTimeStr = (dateStr?: string | null) => {
     if (!dateStr) return "";
     try {
@@ -143,7 +151,6 @@ export default function ShopDetailModal({
     }
   };
 
-  // Danh sách sản phẩm thuộc Shop
   const shopProducts = useMemo(() => {
     if (!shop) return [];
     return (
@@ -152,7 +159,6 @@ export default function ShopDetailModal({
     );
   }, [shop, products]);
 
-  // Danh sách món đang có DEAL HOT hoặc SẮP MỞ BÁN
   const saleProducts = useMemo(() => {
     return shopProducts.filter((p) => {
       const status = checkDiscountStatus(p);
@@ -160,13 +166,11 @@ export default function ShopDetailModal({
     });
   }, [shopProducts, checkDiscountStatus]);
 
-  // Danh sách danh mục (Category)
   const categories = useMemo(() => {
     const cats = Array.from(new Set(shopProducts.map((p) => p.category).filter(Boolean)));
     return ["all", ...cats];
   }, [shopProducts]);
 
-  // Xử lý Lọc & Tìm kiếm sản phẩm
   const filteredProducts = useMemo(() => {
     let result = [...shopProducts];
 
@@ -353,11 +357,11 @@ export default function ShopDetailModal({
           </div>
         )}
 
-        {/* CONTENT BODY - Scrollable Area with generous bottom padding preventing hidden UI */}
-        <div className="flex-1 overflow-y-auto p-3 space-y-3 pb-24">
+        {/* CONTENT BODY - Sử dụng overscroll-contain để ngăn chặn cuộn lọt ra ngoài trang nền */}
+        <div className="flex-1 overflow-y-auto overscroll-contain p-3 space-y-3 pb-24">
           {activeTab === "menu" ? (
             <>
-              {/* 🔥 KHU VỰC DEAL HOT TỪ CỬA HÀNG (CAROUSEL SLIDER) 🔥 */}
+              {/* KHU VỰC DEAL HOT TỪ CỬA HÀNG (CAROUSEL SLIDER) */}
               {!searchQuery && selectedCategory === "all" && filterType === "all" && saleProducts.length > 0 && (
                 <div className="bg-gradient-to-r from-orange-500/10 via-rose-500/5 to-transparent border border-orange-200/80 rounded-2xl p-2.5 space-y-2">
                   <div className="flex items-center justify-between px-0.5">
@@ -375,7 +379,6 @@ export default function ShopDetailModal({
                     </span>
                   </div>
 
-                  {/* Horizontal Scroll Sale Items */}
                   <div className="flex gap-2.5 overflow-x-auto no-scrollbar pb-1">
                     {saleProducts.map((p) => {
                       const { isDiscountActive, isUpcoming, currentPrice, discountPercent } = checkDiscountStatus(p);
@@ -422,7 +425,6 @@ export default function ShopDetailModal({
                               )}
                             </div>
 
-                            {/* Số lượng suất & Thời gian sale */}
                             {isDiscountActive ? (
                               <div className="space-y-1">
                                 {p.discountStock !== undefined && p.discountStock !== null ? (
@@ -492,7 +494,6 @@ export default function ShopDetailModal({
                         onClick={() => onProductClick && onProductClick(product)}
                         className="bg-white p-2.5 rounded-2xl border border-stone-200/80 shadow-2xs flex gap-3 cursor-pointer hover:border-orange-200 transition active:scale-[0.99] group"
                       >
-                        {/* Image */}
                         <div className="relative w-22 h-22 rounded-xl overflow-hidden shrink-0 bg-stone-100">
                           <img
                             src={product.imageUrl}
@@ -511,7 +512,6 @@ export default function ShopDetailModal({
                           )}
                         </div>
 
-                        {/* Content */}
                         <div className="flex-1 flex flex-col justify-between min-w-0">
                           <div className="space-y-0.5">
                             <h4 className="text-xs font-bold text-stone-800 line-clamp-1 group-hover:text-[#ee4d2d] transition">
@@ -534,7 +534,6 @@ export default function ShopDetailModal({
                                 </span>
                               )}
 
-                              {/* Hiển thị thời gian / số lượng sale */}
                               {isDiscountActive && product.discountStock !== undefined && product.discountStock !== null && (
                                 <span className="inline-block bg-rose-50 border border-rose-200 text-rose-700 text-[8px] font-bold px-1.5 py-0.2 rounded-md">
                                   🔥 Còn {product.discountStock} suất

@@ -67,6 +67,17 @@ export default function ProductDetailModal({
   const [fetchedReviews, setFetchedReviews] = useState<Review[]>([]);
   const [loadingReviews, setLoadingReviews] = useState<boolean>(false);
 
+  // Khóa cuộn trang nền (`overflow: hidden`) khi modal mở
+  useEffect(() => {
+    if (product) {
+      const originalStyle = window.getComputedStyle(document.body).overflow;
+      document.body.style.overflow = "hidden";
+      return () => {
+        document.body.style.overflow = originalStyle;
+      };
+    }
+  }, [product]);
+
   // Reset lại số lượng về 1 mỗi khi mở modal cho sản phẩm mới
   useEffect(() => {
     setQuantity(1);
@@ -226,10 +237,11 @@ export default function ProductDetailModal({
       : 0;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-end sm:items-center justify-center transition-opacity animate-fade-in p-0 sm:p-4">
-      <div className="bg-stone-50 w-full max-w-lg max-h-[85vh] sm:max-h-[85vh] rounded-t-3xl sm:rounded-2xl overflow-hidden flex flex-col shadow-2xl relative">
+    <div className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-xs flex items-end sm:items-center justify-center transition-opacity animate-fade-in p-0 sm:p-4">
+      {/* Container chính của Modal: giới hạn chiều cao tối đa, căn chỉnh dạng Flex cột */}
+      <div className="bg-stone-50 w-full max-w-lg h-[90vh] sm:h-[85vh] rounded-t-3xl sm:rounded-2xl overflow-hidden flex flex-col shadow-2xl relative">
 
-        {/* Floating Close Button - Tối giản, hiện đại nằm nổi trên góc phải */}
+        {/* Floating Close Button */}
         <button
           onClick={onClose}
           aria-label="Close"
@@ -238,11 +250,11 @@ export default function ProductDetailModal({
           ✕
         </button>
 
-        {/* Modal Scrollable Body */}
-        <div className="overflow-y-auto flex-1 no-scrollbar pb-24">
+        {/* Modal Scrollable Body: flex-1 để tự co giãn, overscroll-contain chặn cuộn tràn ra ngoài */}
+        <div className="overflow-y-auto overscroll-contain flex-1 no-scrollbar">
 
-          {/* Main Image Banner - Chiều cao vừa vặn, bo nhẹ tinh tế */}
-          <div className="relative h-100 w-full bg-stone-100">
+          {/* Main Image Banner */}
+          <div className="relative h-72 sm:h-80 w-full bg-stone-100 shrink-0">
             <img
               src={galleryImages[selectedImageIndex] || product.imageUrl}
               alt={product.name}
@@ -271,8 +283,9 @@ export default function ProductDetailModal({
                 <button
                   key={idx}
                   onClick={() => setSelectedImageIndex(idx)}
-                  className={`w-12 h-12 rounded-xl overflow-hidden shrink-0 border-2 transition ${selectedImageIndex === idx ? "border-[#ee4d2d] shadow-xs" : "border-transparent opacity-60"
-                    }`}
+                  className={`w-12 h-12 rounded-xl overflow-hidden shrink-0 border-2 transition ${
+                    selectedImageIndex === idx ? "border-[#ee4d2d] shadow-xs" : "border-transparent opacity-60"
+                  }`}
                 >
                   <img src={img} alt="" className="w-full h-full object-cover" />
                 </button>
@@ -311,11 +324,6 @@ export default function ProductDetailModal({
               <span className="text-stone-300">•</span>
               <span className="text-emerald-600 font-semibold">{product.shopName}</span>
             </div>
-
-            {enrichedProduct.storeAddress && (
-              <div className="bg-stone-50 p-2.5 rounded-xl border border-stone-100 text-[11px] text-stone-600 mt-2 flex items-start gap-1.5">
-              </div>
-            )}
           </div>
 
           {/* Quantity Selector */}
@@ -352,7 +360,7 @@ export default function ProductDetailModal({
           </div>
 
           {/* Reviews Section */}
-          <div className="bg-white p-4 space-y-3 mt-2">
+          <div className="bg-white p-4 space-y-3 mt-2 pb-6">
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-bold text-stone-800 uppercase tracking-wider flex items-center gap-1.5">
                 <span>💬 Đánh giá món ăn</span>
@@ -419,8 +427,8 @@ export default function ProductDetailModal({
           </div>
         </div>
 
-        {/* E-Commerce Bottom Action Bar */}
-        <div className="absolute bottom-0 left-0 right-0 bg-white/95 backdrop-blur-md p-3 border-t border-stone-200 grid grid-cols-2 gap-2.5 z-30 shadow-lg">
+        {/* E-Commerce Bottom Action Bar (Cố định ở đáy Modal, nằm hoàn toàn bên trong Modal và có z-index cao) */}
+        <div className="bg-white/95 backdrop-blur-md p-3 border-t border-stone-200 grid grid-cols-2 gap-2.5 shrink-0 z-30 shadow-lg">
           <button
             onClick={() => {
               onAddToCart(enrichedProduct, quantity);
