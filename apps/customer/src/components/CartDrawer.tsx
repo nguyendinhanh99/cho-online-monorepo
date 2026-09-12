@@ -273,18 +273,6 @@ export function CartDrawer() {
           </div>
         )}
 
-        {/* CẢNH BÁO / HƯỚNG DẪN KHI CÓ NHIỀU QUÁN */}
-        {merchantList.length > 1 && (
-          <div className="bg-amber-50 border-b border-amber-200 p-3 text-xs text-amber-800 flex items-start gap-2">
-            <span className="text-base leading-none">💡</span>
-            <div>
-              <p className="font-bold">Giỏ hàng có món từ {merchantList.length} Quán khác nhau</p>
-              <p className="text-[11px] text-amber-700 mt-0.5">
-                Vui lòng chọn nút tròn bên dưới quán bạn muốn tiến hành thanh toán trước.
-              </p>
-            </div>
-          </div>
-        )}
 
         {/* DANH SÁCH MÓN PHÂN THEO QUÁN */}
         <div className="flex-1 overflow-y-auto p-3 space-y-4">
