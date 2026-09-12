@@ -28,8 +28,8 @@ interface CartState {
   closeCart: () => void;
   setSelectedMerchantId: (merchantId: string | null) => void;
 
-  // Actions thao tác với Giỏ hàng
-  addItem: (product: CartProduct, distance?: string) => void;
+  // Actions thao tác với Giỏ hàng (Đã hỗ trợ truyền số lượng quantity)
+  addItem: (product: CartProduct, distance?: string, quantity?: number) => void;
   removeItem: (productId: string) => void;
   updateQuantity: (productId: string, delta: number) => void;
   clearCart: () => Promise<void>;
@@ -96,7 +96,7 @@ export const useCartStore = create<CartState>()(
                 const remoteItems: CartItem[] = data.items;
                 const localItems = get().items;
 
-                // 🔀 Gộp dữ liệu từ Firestore và LocalStorage (đặc biệt hữu ích khi vừa đăng nhập thiết bị mới)
+                // 🔀 Gộp dữ liệu từ Firestore và LocalStorage
                 const mergedMap = new Map<string, CartItem>();
 
                 remoteItems.forEach((item) => {
@@ -119,7 +119,7 @@ export const useCartStore = create<CartState>()(
                 set({ items: finalItems });
               }
             } else {
-              // Nếu Firestore chưa có dữ liệu, đẩy giỏ hàng hiện tại (nếu có) từ Local lên Firestore
+              // Nếu Firestore chưa có dữ liệu, đẩy giỏ hàng hiện tại từ Local lên Firestore
               if (get().items.length > 0) {
                 syncCartToFirebase(userId, get().items);
               }
@@ -136,8 +136,8 @@ export const useCartStore = create<CartState>()(
 
       setSelectedMerchantId: (merchantId) => set({ selectedMerchantId: merchantId }),
 
-      // 2. Thêm món vào giỏ
-      addItem: (product, distance) => {
+      // 2. Thêm món vào giỏ (Đã cập nhật nhận tham số quantity, mặc định là 1)
+      addItem: (product, distance, quantity = 1) => {
         const currentItems = get().items;
         const merchantId = product.merchantId || "default_merchant";
 
@@ -155,11 +155,13 @@ export const useCartStore = create<CartState>()(
         let updatedItems: CartItem[] = [];
 
         if (existingIndex > -1) {
+          // Cộng dồn đúng số lượng truyền vào (quantity)
           updatedItems = currentItems.map((item, idx) =>
-            idx === existingIndex ? { ...item, quantity: item.quantity + 1 } : item
+            idx === existingIndex ? { ...item, quantity: item.quantity + quantity } : item
           );
         } else {
-          updatedItems = [...currentItems, { product: productWithDetails, quantity: 1 }];
+          // Thêm mới với đúng số lượng truyền vào
+          updatedItems = [...currentItems, { product: productWithDetails, quantity }];
         }
 
         set({ items: updatedItems, isOpen: true });
@@ -262,12 +264,12 @@ export const useCartStore = create<CartState>()(
       },
     }),
     {
-      name: "cho-online-cart-storage", // Tên key lưu trữ trong localStorage
+      name: "cho-online-cart-storage",
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({
         items: state.items,
         selectedMerchantId: state.selectedMerchantId,
-      }), // Chỉ lưu danh sách items và shop đang chọn vào localStorage
+      }),
     }
   )
 );

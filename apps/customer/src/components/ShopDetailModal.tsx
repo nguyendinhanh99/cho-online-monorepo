@@ -205,7 +205,7 @@ export default function ShopDetailModal({
 
   return (
     <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4 animate-fade-in">
-      <div className="bg-stone-100 w-full max-w-lg h-[90vh] sm:h-[85vh] rounded-t-3xl sm:rounded-3xl overflow-hidden shadow-2xl relative flex flex-col">
+      <div className="bg-stone-100 w-full max-w-lg h-[92vh] sm:h-[88vh] rounded-t-3xl sm:rounded-3xl overflow-hidden shadow-2xl relative flex flex-col">
         
         {/* COVER HEADER */}
         <div className="h-28 bg-gradient-to-r from-[#ff4500] via-[#ee4d2d] to-[#d0011b] relative p-4 shrink-0">
@@ -353,8 +353,8 @@ export default function ShopDetailModal({
           </div>
         )}
 
-        {/* CONTENT BODY */}
-        <div className="flex-1 overflow-y-auto p-3 space-y-3">
+        {/* CONTENT BODY - Scrollable Area with generous bottom padding preventing hidden UI */}
+        <div className="flex-1 overflow-y-auto p-3 space-y-3 pb-24">
           {activeTab === "menu" ? (
             <>
               {/* 🔥 KHU VỰC DEAL HOT TỪ CỬA HÀNG (CAROUSEL SLIDER) 🔥 */}

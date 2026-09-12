@@ -87,6 +87,7 @@ interface Voucher {
   isActive?: boolean;
 }
 
+
 const HOT_KEYWORDS = ["Cơm tấm", "Trà sữa", "Bún đậu", "Bánh mì", "Cafe", "Gà rán", "Lẩu"];
 
 const CATEGORY_SUGGESTIONS: Record<string, string[]> = {
@@ -164,7 +165,7 @@ export default function HomePage() {
 
   // State kiểm tra Client Mount chống lỗi Hydration
   const [isMounted, setIsMounted] = useState(false);
-
+  const { addItem } = useCartStore();
   // State thông tin người dùng / địa chỉ giao hàng
   const [userInfo, setUserInfo] = useState<UserLocation>({
     customerName: "Khách Hàng",
@@ -321,6 +322,8 @@ export default function HomePage() {
       }
     }
   }, []);
+
+
 
   const [selectedShop, setSelectedShop] = useState<Shop | null>(null);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
@@ -647,6 +650,9 @@ export default function HomePage() {
     };
   }, [geocodeAddress]);
 
+  const handleAddToCartModal = (product: any, quantity: number) => {
+    addItem(product, product.distance || 0, quantity);
+  };
   const calculatedDistances = useMemo(() => {
     const distances: Record<string, { text: string; km: number }> = {};
     const userLat = userInfo.lat;
@@ -1630,12 +1636,11 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* Modals */}
       <ProductDetailModal
         product={selectedProduct}
-        shop={(selectedProduct && shops ? shops[selectedProduct.shopId] : undefined) as any}
+        shop={selectedProduct && shops ? (shops[selectedProduct.shopId] as any) : undefined}
         onClose={() => setSelectedProduct(null)}
-        onAddToCart={handleAddToCart}
+        onAddToCart={handleAddToCartModal}
         formatCurrency={formatCurrency}
       />
 
