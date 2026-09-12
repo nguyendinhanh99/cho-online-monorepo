@@ -54,6 +54,12 @@ export default function ShipperRegisterPage() {
     const file = e.target.files?.[0];
     if (file) {
       setFiles((prev) => ({ ...prev, [field]: file }));
+      
+      // Xóa URL blob cũ để giải phóng bộ nhớ
+      if (previews[field]) {
+        URL.revokeObjectURL(previews[field]);
+      }
+      
       setPreviews((prev) => ({ ...prev, [field]: URL.createObjectURL(file) }));
     }
   };
@@ -74,7 +80,7 @@ export default function ShipperRegisterPage() {
     }
 
     const result = await res.json();
-    return result.secure_url; // Trả về link HTTPS của ảnh
+    return result.secure_url;
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -96,9 +102,11 @@ export default function ShipperRegisterPage() {
         uploadToCloudinary(files.driverLicense),
       ]);
 
-      // 2. Tạo tài khoản Firebase Auth (dùng SĐT tạo email ảo)
+      // 2. Tạo tài khoản Firebase Auth (dùng SĐT đã làm sạch để tạo email ảo)
       setUploadStatus("Đang tạo tài khoản Firebase...");
-      const virtualEmail = `${formData.phone}@shipper.choonline.vn`;
+      const cleanPhone = formData.phone.trim().replace(/\s+/g, "");
+      const virtualEmail = `${cleanPhone}@shipper.choonline.vn`;
+
       const userCredential = await createUserWithEmailAndPassword(
         auth,
         virtualEmail,
@@ -110,10 +118,10 @@ export default function ShipperRegisterPage() {
       setUploadStatus("Đang lưu thông tin hồ sơ...");
       await setDoc(doc(db, "shippers", uid), {
         uid,
-        fullName: formData.fullName,
-        phone: formData.phone,
-        identityCardNumber: formData.identityCardNumber,
-        licensePlate: formData.licensePlate,
+        fullName: formData.fullName.trim(),
+        phone: cleanPhone,
+        identityCardNumber: formData.identityCardNumber.trim(),
+        licensePlate: formData.licensePlate.trim(),
         vehicleType: formData.vehicleType,
         
         // Link ảnh từ Cloudinary
@@ -132,7 +140,15 @@ export default function ShipperRegisterPage() {
     } catch (error: any) {
       setIsLoading(false);
       console.error("Lỗi đăng ký:", error);
-      alert("Đã xảy ra lỗi: " + (error.message || "Không thể gửi hồ sơ"));
+
+      // Bắt lỗi trùng Email / Số điện thoại từ Firebase Auth
+      if (error.code === "auth/email-already-in-use") {
+        alert("Số điện thoại này đã được đăng ký! Vui lòng sử dụng số khác hoặc đăng nhập.");
+      } else if (error.code === "auth/weak-password") {
+        alert("Mật khẩu quá yếu! Vui lòng nhập từ 6 ký tự trở lên.");
+      } else {
+        alert("Đã xảy ra lỗi: " + (error.message || "Không thể gửi hồ sơ"));
+      }
     }
   };
 
@@ -295,7 +311,7 @@ export default function ShipperRegisterPage() {
           <button
             type="submit"
             disabled={isLoading}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-extrabold py-3.5 rounded-2xl transition cursor-pointer text-xs shadow-md active:scale-95"
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-extrabold py-3.5 rounded-2xl transition cursor-pointer text-xs shadow-md active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isLoading ? uploadStatus : "NỘP HỒ SƠ ĐỂ CHỜ DUYỆT (24H)"}
           </button>
