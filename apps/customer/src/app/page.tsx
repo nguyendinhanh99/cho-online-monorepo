@@ -1337,7 +1337,7 @@ export default function HomePage() {
                   )}
 
                   <div className="space-y-1.5">
-                    {/* ĐÃ CẬP NHẬT: Thay aspect-square bằng h-24 để khung ảnh thấp hơn */}
+                    {/* Khung ảnh flash deal */}
                     <div className="h-24 bg-stone-100 rounded-xl overflow-hidden relative group-hover:scale-[1.02] transition duration-200">
                       <img
                         src={item.imageUrl}

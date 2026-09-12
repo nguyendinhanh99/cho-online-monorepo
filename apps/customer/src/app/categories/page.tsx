@@ -139,12 +139,37 @@ export default function CategoriesPage() {
   const [savedVouchers, setSavedVouchers] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // 🔄 Trạng thái ẩn/hiện phần banner & header khi cuộn trang
+  const [showBannerOnScroll, setShowBannerOnScroll] = useState<boolean>(true);
+  const [isBannerOpen, setIsBannerOpen] = useState<boolean>(true);
+  const [lastScrollY, setLastScrollY] = useState<number>(0);
+
   const [flashTab, setFlashTab] = useState<"active" | "upcoming">("active");
 
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [isSearchFocused, setIsSearchFocused] = useState<boolean>(false);
   const [searchHistory, setSearchHistory] = useState<string[]>([]);
   const searchRef = useRef<HTMLDivElement>(null);
+
+  // 📜 Xử lý sự kiện cuộn trang (Cuộn xuống -> ẩn gọn header, Cuộn lên -> hiển thị lại)
+  useEffect(() => {
+    const handleScroll = () => {
+      const currentScrollY = window.scrollY;
+      if (currentScrollY <= 10) {
+        setShowBannerOnScroll(true);
+      } else if (currentScrollY > lastScrollY && currentScrollY > 60) {
+        // Cuộn xuống -> ẩn
+        setShowBannerOnScroll(false);
+      } else if (currentScrollY < lastScrollY) {
+        // Cuộn lên -> hiển thị
+        setShowBannerOnScroll(true);
+      }
+      setLastScrollY(currentScrollY);
+    };
+
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, [lastScrollY]);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -582,124 +607,155 @@ export default function CategoriesPage() {
 
   return (
     <div className="bg-[#f0f4f8] min-h-screen pb-24 font-sans text-slate-800">
-      {/* 💙 HEADER BÁCH HÓA & ĐIỆN TỬ */}
-      <div className="sticky top-0 z-40 bg-gradient-to-r from-blue-700 via-blue-600 to-cyan-600 p-3 text-white shadow-md space-y-2.5">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5 overflow-hidden flex-1 bg-white/15 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/20">
-            <span className="text-sm shrink-0">📍</span>
-            <div className="text-[11px] leading-tight truncate flex-1">
-              <span className="text-[9px] opacity-80 block font-medium">Giao hàng đến:</span>
-              <input
-                type="text"
-                value={userInfo.address}
-                onChange={(e) => setUserInfo((prev) => ({ ...prev, address: e.target.value }))}
-                placeholder="Nhập địa chỉ giao hàng..."
-                className="bg-transparent text-white font-bold text-xs focus:outline-none w-full truncate placeholder:text-white/70"
-              />
-            </div>
-          </div>
-
-          <div
-            onClick={openCart}
-            className="relative p-2 bg-white/15 hover:bg-white/25 rounded-full transition cursor-pointer border border-white/20"
-          >
-            <span className="text-xl">🛒</span>
-            {totalCartCount > 0 && (
-              <span className="absolute -top-1 -right-1 bg-cyan-400 text-blue-950 text-[10px] font-black w-4 h-4 rounded-full flex items-center justify-center border-2 border-white shadow-sm animate-pulse">
-                {totalCartCount}
+      {/* 🔴 VÙNG HEADER & BANNER CỐ ĐỊNH (Cuộn xuống tự động ẩn gọn, cuộn lên hiện lại) */}
+      <div
+        className={`sticky top-0 z-40 transition-all duration-300 shadow-md ${
+          showBannerOnScroll ? "translate-y-0 opacity-100" : "-translate-y-full opacity-0"
+        }`}
+      >
+        {/* Banner thông báo trên cùng */}
+        {isBannerOpen && (
+          <div className="bg-gradient-to-r from-amber-500 via-orange-600 to-rose-600 text-white px-3 py-2 text-xs flex items-center justify-between gap-2 overflow-hidden">
+            <div className="flex items-center gap-2 truncate">
+              <span className="text-base shrink-0">🛍️</span>
+              <span className="font-medium truncate">
+                <strong>Quần áo & Tạp hóa giao 5h:</strong> Đang thử nghiệm tại Hà Tĩnh
               </span>
-            )}
-          </div>
-        </div>
+            </div>
 
-        {/* 🔍 SEARCH BAR THÔNG MINH */}
-        <div className="relative" ref={searchRef}>
-          <div className="relative flex items-center">
-            <input
-              type="text"
-              value={searchQuery}
-              onFocus={() => setIsSearchFocused(true)}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  saveSearchKeyword(searchQuery);
-                  setIsSearchFocused(false);
-                }
-              }}
-              placeholder="Tìm nước giặt, tai nghe, sạc dự phòng, nồi cơm, pin..."
-              className="w-full bg-white text-slate-800 text-xs py-2.5 pl-9 pr-20 rounded-xl outline-none placeholder:text-slate-400 shadow-inner font-medium"
-            />
-            <span className="absolute left-3 text-slate-400 text-xs">🔍</span>
-
-            {searchQuery && (
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="bg-white/20 border border-white/40 text-white font-bold text-[10px] px-2.5 py-0.5 rounded-full uppercase tracking-wider">
+                Sắp ra mắt
+              </span>
               <button
-                onClick={() => setSearchQuery("")}
-                className="absolute right-14 text-slate-400 hover:text-slate-600 p-1 text-xs font-bold"
+                onClick={() => setIsBannerOpen(false)}
+                className="text-white/80 hover:text-white p-1 text-sm font-bold cursor-pointer transition"
               >
                 ✕
               </button>
-            )}
+            </div>
+          </div>
+        )}
 
-            <button
-              onClick={() => {
-                saveSearchKeyword(searchQuery);
-                setIsSearchFocused(false);
-              }}
-              className="absolute right-1 top-1 bottom-1 bg-blue-600 hover:bg-blue-700 text-white px-3.5 rounded-lg text-[11px] font-bold transition"
+        {/* 💙 HEADER BÁCH HÓA & ĐIỆN TỬ (Bao gồm địa chỉ & ô tìm kiếm trong ảnh) */}
+        <div className="bg-gradient-to-r from-blue-700 via-blue-600 to-cyan-600 p-3 text-white space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 overflow-hidden flex-1 bg-white/15 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/20">
+              <span className="text-sm shrink-0">📍</span>
+              <div className="text-[11px] leading-tight truncate flex-1">
+                <span className="text-[9px] opacity-80 block font-medium">Giao hàng đến:</span>
+                <input
+                  type="text"
+                  value={userInfo.address}
+                  onChange={(e) => setUserInfo((prev) => ({ ...prev, address: e.target.value }))}
+                  placeholder="Nhập địa chỉ giao hàng..."
+                  className="bg-transparent text-white font-bold text-xs focus:outline-none w-full truncate placeholder:text-white/70"
+                />
+              </div>
+            </div>
+
+            <div
+              onClick={openCart}
+              className="relative p-2 bg-white/15 hover:bg-white/25 rounded-full transition cursor-pointer border border-white/20"
             >
-              Tìm kiếm
-            </button>
+              <span className="text-xl">🛒</span>
+              {totalCartCount > 0 && (
+                <span className="absolute -top-1 -right-1 bg-cyan-400 text-blue-950 text-[10px] font-black w-4 h-4 rounded-full flex items-center justify-center border-2 border-white shadow-sm animate-pulse">
+                  {totalCartCount}
+                </span>
+              )}
+            </div>
           </div>
 
-          {isSearchFocused && (
-            <div className="absolute top-full left-0 right-0 mt-1 bg-white rounded-xl shadow-xl border border-slate-200 p-3 z-50 text-slate-800 space-y-3">
-              {searchHistory.length > 0 && (
+          {/* 🔍 SEARCH BAR THÔNG MINH */}
+          <div className="relative" ref={searchRef}>
+            <div className="relative flex items-center">
+              <input
+                type="text"
+                value={searchQuery}
+                onFocus={() => setIsSearchFocused(true)}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    saveSearchKeyword(searchQuery);
+                    setIsSearchFocused(false);
+                  }
+                }}
+                placeholder="Tìm nước giặt, tai nghe, sạc dự phòng, nồi cơm, pin..."
+                className="w-full bg-white text-slate-800 text-xs py-2.5 pl-9 pr-20 rounded-xl outline-none placeholder:text-slate-400 shadow-inner font-medium"
+              />
+              <span className="absolute left-3 text-slate-400 text-xs">🔍</span>
+
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery("")}
+                  className="absolute right-14 text-slate-400 hover:text-slate-600 p-1 text-xs font-bold"
+                >
+                  ✕
+                </button>
+              )}
+
+              <button
+                onClick={() => {
+                  saveSearchKeyword(searchQuery);
+                  setIsSearchFocused(false);
+                }}
+                className="absolute right-1 top-1 bottom-1 bg-blue-600 hover:bg-blue-700 text-white px-3.5 rounded-lg text-[11px] font-bold transition"
+              >
+                Tìm kiếm
+              </button>
+            </div>
+
+            {isSearchFocused && (
+              <div className="absolute top-full left-0 right-0 mt-1 bg-white rounded-xl shadow-xl border border-slate-200 p-3 z-50 text-slate-800 space-y-3">
+                {searchHistory.length > 0 && (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-[10px] font-bold text-slate-400">
+                      <span>LỊCH SỬ TÌM KIẾM</span>
+                      <button onClick={clearHistory} className="hover:text-blue-600">
+                        Xóa
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {searchHistory.map((item, idx) => (
+                        <span
+                          key={idx}
+                          onClick={() => {
+                            setSearchQuery(item);
+                            setIsSearchFocused(false);
+                          }}
+                          className="bg-slate-100 hover:bg-blue-50 hover:text-blue-600 text-slate-600 text-[11px] px-2.5 py-1 rounded-full cursor-pointer transition font-medium"
+                        >
+                          🕒 {item}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <div className="space-y-1.5">
-                  <div className="flex items-center justify-between text-[10px] font-bold text-slate-400">
-                    <span>LỊCH SỬ TÌM KIẾM</span>
-                    <button onClick={clearHistory} className="hover:text-blue-600">
-                      Xóa
-                    </button>
+                  <div className="text-[10px] font-bold text-slate-400">
+                    <span>🔥 TÌM KIẾM NHIỀU NHẤT</span>
                   </div>
                   <div className="flex flex-wrap gap-1.5">
-                    {searchHistory.map((item, idx) => (
+                    {HOT_KEYWORDS.map((kw, idx) => (
                       <span
                         key={idx}
                         onClick={() => {
-                          setSearchQuery(item);
+                          setSearchQuery(kw);
+                          saveSearchKeyword(kw);
                           setIsSearchFocused(false);
                         }}
-                        className="bg-slate-100 hover:bg-blue-50 hover:text-blue-600 text-slate-600 text-[11px] px-2.5 py-1 rounded-full cursor-pointer transition font-medium"
+                        className="bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 text-[11px] px-2.5 py-1 rounded-full cursor-pointer transition font-bold"
                       >
-                        🕒 {item}
+                        {kw}
                       </span>
                     ))}
                   </div>
                 </div>
-              )}
-
-              <div className="space-y-1.5">
-                <div className="text-[10px] font-bold text-slate-400">
-                  <span>🔥 TÌM KIẾM NHIỀU NHẤT</span>
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {HOT_KEYWORDS.map((kw, idx) => (
-                    <span
-                      key={idx}
-                      onClick={() => {
-                        setSearchQuery(kw);
-                        saveSearchKeyword(kw);
-                        setIsSearchFocused(false);
-                      }}
-                      className="bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 text-[11px] px-2.5 py-1 rounded-full cursor-pointer transition font-bold"
-                    >
-                      {kw}
-                    </span>
-                  ))}
-                </div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
 
@@ -796,7 +852,7 @@ export default function CategoriesPage() {
         </div>
       )}
 
-      {/* ⚡ DANH MỤC NỔI BẬT - BẢN THU NHỎ TỈ LỆ 7/3 TĨNH ĐẸP */}
+      {/* ⚡ DANH MỤC NỔI BẬT */}
       <div className="bg-white py-2 px-3 border-b border-slate-200/80 shadow-2xs space-y-2">
         <div className="flex items-center justify-between">
           <h3 className="text-[11px] font-black text-slate-800 tracking-tight flex items-center gap-1">
@@ -808,7 +864,7 @@ export default function CategoriesPage() {
         </div>
 
         <div className="space-y-1.5">
-          {/* 📱 HÀNG 1: ĐIỆN TỬ & CÔNG NGHỆ */}
+          {/* HÀNG 1 */}
           <div className="space-y-1">
             <div className="flex items-center gap-1 text-[9px] font-bold text-blue-800 uppercase tracking-wider">
               <span>⚡</span>
@@ -866,7 +922,7 @@ export default function CategoriesPage() {
             </div>
           </div>
 
-          {/* 🧺 HÀNG 2: BÁCH HÓA & TIÊU DÙNG */}
+          {/* HÀNG 2 */}
           <div className="space-y-1">
             <div className="flex items-center gap-1 text-[9px] font-bold text-emerald-800 uppercase tracking-wider">
               <span>🧺</span>
@@ -927,7 +983,7 @@ export default function CategoriesPage() {
       </div>
 
       {/* QUICK FILTERS */}
-      <div className="px-2 py-2 flex items-center gap-1.5 overflow-x-auto no-scrollbar bg-slate-200/60 sticky top-[108px] z-30 backdrop-blur-md">
+      <div className="px-2 py-2 flex items-center gap-1.5 overflow-x-auto no-scrollbar bg-slate-200/60 sticky top-0 z-30 backdrop-blur-md">
         {[
           { id: "recommend", label: "🎯 Gợi ý tốt nhất" },
           { id: "bestseller", label: "👑 Bán chạy nhất" },
@@ -948,7 +1004,7 @@ export default function CategoriesPage() {
         ))}
       </div>
 
-      {/* 🌊 FLASH SALE - XẢ KHO */}
+      {/* 🌊 FLASH SALE */}
       {!searchQuery && (activeDeals.length > 0 || upcomingDeals.length > 0) && (
         <div className="bg-white my-2 py-3 border-y border-slate-200 shadow-2xs">
           <div className="px-3 space-y-2">
@@ -1058,7 +1114,7 @@ export default function CategoriesPage() {
         </div>
       )}
 
-      {/* TAB DANH MỤC SẢN PHẨM HOÀN CHỈNH */}
+      {/* TAB DANH MỤC SẢN PHẨM */}
       <div className="bg-white border-b border-slate-200 my-1 py-2">
         <div className="flex gap-2 overflow-x-auto no-scrollbar px-3 whitespace-nowrap">
           <button
