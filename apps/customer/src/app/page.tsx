@@ -163,6 +163,27 @@ export default function HomePage() {
   const [savedVouchers, setSavedVouchers] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // State ẩn/hiện header khi cuộn trang
+  const [showNavbar, setShowNavbar] = useState(true);
+  const lastScrollY = useRef(0);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      const currentScrollY = window.scrollY;
+      if (currentScrollY > lastScrollY.current && currentScrollY > 80) {
+        // Cuộn xuống -> Ẩn header
+        setShowNavbar(false);
+      } else {
+        // Cuộn lên -> Hiện header
+        setShowNavbar(true);
+      }
+      lastScrollY.current = currentScrollY;
+    };
+
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
+
   // State kiểm tra Client Mount chống lỗi Hydration
   const [isMounted, setIsMounted] = useState(false);
   const { addItem } = useCartStore();
@@ -891,8 +912,12 @@ export default function HomePage() {
         })}
       </div>
 
-      {/* HEADER TÌM KIẾM & ĐỊA CHỈ */}
-      <div className="sticky top-0 z-40 bg-gradient-to-r from-[#ff4500] via-[#ee4d2d] to-[#ff6036] p-3 text-white shadow-md space-y-2.5">
+      {/* HEADER TÌM KIẾM & ĐỊA CHỈ (Ẩn/Hiện mượt mà theo thao tác cuộn chuột) */}
+      <div 
+        className={`sticky top-0 z-40 bg-gradient-to-r from-[#ff4500] via-[#ee4d2d] to-[#ff6036] p-3 text-white shadow-md space-y-2.5 transition-transform duration-300 ${
+          showNavbar ? "translate-y-0" : "-translate-y-full"
+        }`}
+      >
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 overflow-hidden flex-1 bg-black/15 px-3 py-1.5 rounded-full border border-white/25 shadow-inner">
             <span className="text-sm shrink-0 animate-bounce">🛵</span>
@@ -1182,7 +1207,7 @@ export default function HomePage() {
       </div>
 
       {/* QUICK FILTERS */}
-      <div className="px-2 py-2 flex items-center gap-1.5 overflow-x-auto no-scrollbar bg-stone-100/85 sticky top-[108px] z-30 backdrop-blur-md">
+      <div className="px-2 py-2 flex items-center gap-1.5 overflow-x-auto no-scrollbar bg-stone-100/85 sticky top-[0px] z-30 backdrop-blur-md">
         {[
           { id: "recommend", label: "🎯 Gợi ý cho bạn (AI)" },
           { id: "fast", label: "⚡ Giao gần nhất" },
