@@ -208,48 +208,52 @@ export default function ShopDetailModal({
   if (!shop) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-end justify-center p-0 sm:p-4 animate-fade-in">
-      {/* Container chính: Trên mobile căn đáy, cách mép trên một khoảng để không bị che khuất thanh URL */}
-      <div className="bg-stone-100 w-full max-w-lg h-[88vh] sm:h-[85vh] rounded-t-3xl sm:rounded-3xl overflow-hidden shadow-2xl relative flex flex-col mt-12 sm:mt-0">
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-0 sm:p-4 animate-fade-in">
+      {/* Container chính dạng Fullscreen trên Mobile và Box căn giữa gọn gàng trên Desktop */}
+      <div className="bg-stone-100 w-full h-full sm:h-[88vh] sm:max-w-xl sm:rounded-3xl overflow-hidden shadow-2xl relative flex flex-col">
         
-        {/* THANH KÉO (HANDLE BAR) CHO MOBILE & NÚT ĐÓNG AN TOÀN */}
-        <div className="bg-gradient-to-r from-[#ff4500] via-[#ee4d2d] to-[#d0011b] relative px-4 pt-3 pb-4 shrink-0 flex items-center justify-between">
+        {/* HEADER CỐ ĐỊNH (Tối ưu vuốt, thao tác 1 tay & nút đóng rõ ràng không bị đè) */}
+        <div className="bg-gradient-to-r from-[#ff4500] via-[#ee4d2d] to-[#d0011b] relative px-4 py-3 shrink-0 flex items-center justify-between text-white shadow-md z-20">
           <div className="absolute top-1.5 left-1/2 -translate-x-1/2 w-10 h-1 bg-white/40 rounded-full sm:hidden" />
           
           <button
             onClick={onClose}
-            className="flex items-center gap-1.5 text-white bg-black/20 hover:bg-black/40 px-3 py-1.5 rounded-full text-xs font-bold backdrop-blur-md transition active:scale-95 cursor-pointer z-20"
+            className="flex items-center gap-1.5 bg-black/20 hover:bg-black/40 px-3 py-1.5 rounded-full text-xs font-bold backdrop-blur-md transition active:scale-95 cursor-pointer"
           >
             <span>← Quay lại</span>
           </button>
 
+          <span className="text-xs font-bold truncate max-w-[180px] sm:max-w-xs text-center">
+            {shop.name}
+          </span>
+
           <button
             onClick={onClose}
             aria-label="Close"
-            className="w-8 h-8 rounded-full bg-black/30 hover:bg-black/50 text-white flex items-center justify-center backdrop-blur-md transition active:scale-90 text-sm font-bold z-20 cursor-pointer"
+            className="w-8 h-8 rounded-full bg-black/30 hover:bg-black/50 flex items-center justify-center backdrop-blur-md transition active:scale-90 text-sm font-bold cursor-pointer"
           >
             ✕
           </button>
         </div>
 
         {/* SHOP INFO CARD */}
-        <div className="bg-white px-4 pb-3 shrink-0 relative shadow-2xs border-b border-stone-200/60">
-          <div className="flex items-start gap-3 -mt-6 relative z-10">
+        <div className="bg-white px-4 py-3 shrink-0 relative shadow-2xs border-b border-stone-200/60">
+          <div className="flex items-center gap-3">
             <div className="relative shrink-0">
               <img
                 src={shop.avatar}
                 alt={shop.name}
-                className="w-16 h-16 sm:w-18 sm:h-18 rounded-2xl object-cover border-2 border-white shadow-md bg-white"
+                className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl object-cover border-2 border-stone-100 shadow-sm bg-white"
               />
               {shop.isMall && (
-                <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 bg-[#d0011b] text-white text-[8px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider border border-white shadow-xs">
+                <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 bg-[#d0011b] text-white text-[8px] font-black px-1.5 py-0.2 rounded-full uppercase tracking-wider border border-white shadow-xs">
                   Mall
                 </span>
               )}
             </div>
 
-            <div className="flex-1 min-w-0 pt-6 sm:pt-8">
-              <h2 className="text-base font-extrabold text-stone-900 truncate leading-tight">
+            <div className="flex-1 min-w-0">
+              <h2 className="text-sm sm:text-base font-extrabold text-stone-900 truncate leading-tight">
                 {shop.name}
               </h2>
               <p className="text-[11px] text-stone-500 truncate flex items-center gap-1 mt-0.5 font-medium">
@@ -259,7 +263,7 @@ export default function ShopDetailModal({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 mt-3 pt-2.5 border-t border-stone-100 text-xs text-stone-600 text-center items-center">
+          <div className="grid grid-cols-2 gap-2 mt-2.5 pt-2 border-t border-stone-100 text-xs text-stone-600 text-center items-center">
             <div className="flex items-center justify-center gap-1">
               <span className="text-amber-500 font-black">★ {(shop.rating || 5.0).toFixed(1)}</span>
               <span className="text-stone-400 text-[10px] font-medium">({shop.reviewCount || 0}+ đánh giá)</span>
@@ -276,7 +280,7 @@ export default function ShopDetailModal({
         <div className="flex border-b border-stone-200 bg-white shrink-0 px-4 gap-6 text-xs font-bold">
           <button
             onClick={() => setActiveTab("menu")}
-            className={`py-3 relative transition cursor-pointer flex items-center gap-1.5 ${
+            className={`py-2.5 relative transition cursor-pointer flex items-center gap-1.5 ${
               activeTab === "menu" ? "text-[#ee4d2d]" : "text-stone-500 hover:text-stone-800"
             }`}
           >
@@ -291,7 +295,7 @@ export default function ShopDetailModal({
           
           <button
             onClick={() => setActiveTab("info")}
-            className={`py-3 relative transition cursor-pointer ${
+            className={`py-2.5 relative transition cursor-pointer ${
               activeTab === "info" ? "text-[#ee4d2d]" : "text-stone-500 hover:text-stone-800"
             }`}
           >
@@ -664,7 +668,7 @@ export default function ShopDetailModal({
                 </div>
                 <div className="flex items-center gap-2.5 text-stone-700 border-t border-stone-100 pt-2">
                   <span className="text-emerald-500 text-base">🛡️</span>
-                  <span className="text-[11px] font-medium">Đảm bảo an toàn thực phẩm & chất lượng</span>
+                  <span className="text-[11px] font-medium">Ensuring food safety & quality</span>
                 </div>
               </div>
 

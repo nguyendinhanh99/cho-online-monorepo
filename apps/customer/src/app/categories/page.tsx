@@ -614,28 +614,6 @@ export default function CategoriesPage() {
         }`}
       >
         {/* Banner thông báo trên cùng */}
-        {isBannerOpen && (
-          <div className="bg-gradient-to-r from-amber-500 via-orange-600 to-rose-600 text-white px-3 py-2 text-xs flex items-center justify-between gap-2 overflow-hidden">
-            <div className="flex items-center gap-2 truncate">
-              <span className="text-base shrink-0">🛍️</span>
-              <span className="font-medium truncate">
-                <strong>Quần áo & Tạp hóa giao 5h:</strong> Đang thử nghiệm tại Hà Tĩnh
-              </span>
-            </div>
-
-            <div className="flex items-center gap-2 shrink-0">
-              <span className="bg-white/20 border border-white/40 text-white font-bold text-[10px] px-2.5 py-0.5 rounded-full uppercase tracking-wider">
-                Sắp ra mắt
-              </span>
-              <button
-                onClick={() => setIsBannerOpen(false)}
-                className="text-white/80 hover:text-white p-1 text-sm font-bold cursor-pointer transition"
-              >
-                ✕
-              </button>
-            </div>
-          </div>
-        )}
 
         {/* 💙 HEADER BÁCH HÓA & ĐIỆN TỬ (Bao gồm địa chỉ & ô tìm kiếm trong ảnh) */}
         <div className="bg-gradient-to-r from-blue-700 via-blue-600 to-cyan-600 p-3 text-white space-y-2.5">
