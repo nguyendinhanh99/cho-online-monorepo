@@ -22,6 +22,14 @@ const parseDistanceToKm = (distanceStr: string = "1.0 km"): number => {
 };
 
 /**
+ * Hàm tính thời gian giao hàng dự kiến (ETA) theo khoảng cách và thời gian chuẩn bị
+ */
+const calculateETA = (prepTimeMinutes: number = 15, distanceKm: number = 1.0): number => {
+  const travelTimeMinutes = Math.round(distanceKm * 3 + 5);
+  return prepTimeMinutes + travelTimeMinutes;
+};
+
+/**
  * Thuật toán tính Phí vận chuyển chuẩn hệ thống TMĐT Hà Tĩnh
  */
 const calculateShippingFeeDetails = (
@@ -30,7 +38,7 @@ const calculateShippingFeeDetails = (
   totalItemsCount: number = 1
 ) => {
   let baseFee = 0;
-  const discount = 0; // KHÔNG GIẢM PHÍ SHIP TỪ SÀN NỮA
+  const discount = 0;
 
   if (distanceKm <= 1) {
     baseFee = 14000;
@@ -124,6 +132,7 @@ export function CartDrawer() {
         shopName: string;
         distanceStr: string;
         distanceKm: number;
+        estimatedMinutes: number;
         products: typeof items;
       }
     > = {};
@@ -134,6 +143,8 @@ export function CartDrawer() {
       const shopName = prod.merchantName || prod.shopName || "Cửa hàng";
       const rawDistance = prod.distance || "1.0 km";
       const parsedDistance = parseDistanceToKm(rawDistance);
+      const prepTime = prod.prepTime || 15;
+      const deliveryTime = calculateETA(prepTime, parsedDistance);
 
       if (!map[mId]) {
         map[mId] = {
@@ -141,6 +152,7 @@ export function CartDrawer() {
           shopName,
           distanceStr: rawDistance,
           distanceKm: parsedDistance,
+          estimatedMinutes: deliveryTime,
           products: [],
         };
       }
@@ -193,9 +205,10 @@ export function CartDrawer() {
   }, [activeMerchantData, activeItemsCount]);
 
   const finalShippingFee = shipCalculation.finalFee;
-  const finalTotalPrice = rawTotalPrice + finalShippingFee;
 
-  // 5. Tính số tiền tiết kiệm được (Đã ép kiểu as any để sửa lỗi đỏ TypeScript)
+  const finalTotalPrice = Math.max(0, rawTotalPrice + finalShippingFee);
+
+  // 5. Tính số tiền tiết kiệm được từ sản phẩm sale
   const totalSavings = useMemo(() => {
     return activeItems.reduce((sum, item) => {
       const prod = (item.product || item) as any;
@@ -267,12 +280,11 @@ export function CartDrawer() {
             <div className="flex items-center gap-2 font-medium">
               <span className="text-base leading-none">🎉</span>
               <span>
-                Bạn tiết kiệm được <strong>{formatCurrency(totalSavings)}</strong> cho đơn này!
+                Bạn tiết kiệm được <strong>{formatCurrency(totalSavings)}</strong> từ sản phẩm giảm giá!
               </span>
             </div>
           </div>
         )}
-
 
         {/* DANH SÁCH MÓN PHÂN THEO QUÁN */}
         <div className="flex-1 overflow-y-auto p-3 space-y-4">
@@ -334,6 +346,17 @@ export function CartDrawer() {
                       <span className="text-stone-300">•</span>
                       <span>{formatCurrency(shopShip.finalFee)}</span>
                     </div>
+                  </div>
+
+                  {/* UI/UX THỜI GIAN GIAO HÀNG (ETA) */}
+                  <div className="flex items-center justify-between bg-orange-50/70 border border-orange-100 px-3 py-2 rounded-xl text-xs">
+                    <div className="flex items-center gap-2 text-stone-700">
+                      <span className="text-sm">⏱️</span>
+                      <span className="font-semibold">Thời gian giao dự kiến:</span>
+                    </div>
+                    <span className="font-extrabold text-orange-600 bg-white px-2 py-0.5 rounded-md shadow-2xs border border-orange-200/60">
+                      ~{merchantGroup.estimatedMinutes} phút
+                    </span>
                   </div>
 
                   {/* CÁC SẢN PHẨM CỦA SHOP */}
@@ -419,9 +442,44 @@ export function CartDrawer() {
           )}
         </div>
 
-        {/* FOOTER THANH TOÁN (TÍNH RIÊNG THEO CỬA HÀNG ĐANG CHỌN) */}
+        {/* FOOTER THANH TOÁN */}
         {items.length > 0 && activeMerchantData && (
           <div className="p-4 bg-white border-t border-stone-200/80 space-y-3 shadow-2xl">
+            
+            {/* UI: BANNER GỢI Ý MÃ GIẢM GIÁ (VOUCHER TEASER) */}
+            <div 
+              onClick={handleCheckout}
+              className="group relative overflow-hidden bg-gradient-to-r from-amber-500 via-orange-500 to-red-500 p-3 rounded-xl text-white shadow-md cursor-pointer transition-transform active:scale-[0.99] hover:shadow-lg"
+            >
+              {/* Hiệu ứng ánh sáng nền nhẹ */}
+              <div className="absolute -right-6 -top-6 w-20 h-20 bg-white/20 rounded-full blur-xl group-hover:scale-150 transition-transform"></div>
+              
+              <div className="relative flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-white/20 backdrop-blur-md flex items-center justify-center text-base shadow-inner">
+                    🎁
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] font-black uppercase tracking-wider bg-white/30 px-1.5 py-0.5 rounded text-white">
+                        Ưu đãi chờ bạn
+                      </span>
+                      <span className="text-[11px] font-medium text-amber-100">
+                        Nhấn để nhận mã giảm giá
+                      </span>
+                    </div>
+                    <p className="text-xs font-bold text-white mt-0.5">
+                      Giảm trực tiếp vào hóa đơn & Miễn phí vận chuyển
+                    </p>
+                  </div>
+                </div>
+                
+                <div className="flex items-center text-xs font-black bg-white text-orange-600 px-2.5 py-1.5 rounded-lg shadow-sm group-hover:bg-amber-50 transition-colors">
+                  Chọn mã ➔
+                </div>
+              </div>
+            </div>
+
             <div className="space-y-1.5">
               <div className="flex justify-between items-center text-xs text-stone-500">
                 <span>Tạm tính ({activeItemsCount} món):</span>

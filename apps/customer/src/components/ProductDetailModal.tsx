@@ -35,6 +35,8 @@ interface Product {
   stockProgress?: number;
   category: string;
   reviews: Review[];
+  distanceStr?: string;
+  deliveryTime?: number;
 }
 
 interface Shop {
@@ -53,6 +55,8 @@ interface ProductDetailModalProps {
   onClose: () => void;
   onAddToCart: (product: Product, quantity: number) => void;
   formatCurrency: (amount: number) => string;
+  distanceStr?: string;
+  deliveryTime?: number;
 }
 
 export default function ProductDetailModal({
@@ -61,6 +65,8 @@ export default function ProductDetailModal({
   onClose,
   onAddToCart,
   formatCurrency,
+  distanceStr = "2.0 km",
+  deliveryTime = 20,
 }: ProductDetailModalProps) {
   const [selectedImageIndex, setSelectedImageIndex] = useState(0);
   const [quantity, setQuantity] = useState(1);
@@ -294,7 +300,7 @@ export default function ProductDetailModal({
           )}
 
           {/* Product Basic Info */}
-          <div className="bg-white p-4 space-y-2 border-b border-stone-100">
+          <div className="bg-white p-4 space-y-2.5 border-b border-stone-100">
             <div className="flex items-baseline gap-2">
               <span className="text-2xl font-black text-[#ee4d2d]">
                 {formatCurrency(product.price)}
@@ -323,6 +329,29 @@ export default function ProductDetailModal({
               <span>Đã bán <strong className="text-stone-700">{product.soldCount}</strong></span>
               <span className="text-stone-300">•</span>
               <span className="text-emerald-600 font-semibold">{product.shopName}</span>
+            </div>
+
+            {/* 🚀 UI/UX MỚI: Thanh hiển thị Khoảng cách & Thời gian giao hàng */}
+            <div className="grid grid-cols-2 gap-2 pt-2">
+              <div className="flex items-center gap-2.5 bg-stone-50 px-3 py-2 rounded-xl border border-stone-100">
+                <div className="w-7 h-7 rounded-lg bg-orange-100 text-[#ee4d2d] flex items-center justify-center shrink-0 text-xs">
+                  📍
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-[10px] text-stone-400 font-medium">Khoảng cách</span>
+                  <span className="text-xs font-bold text-stone-800">{distanceStr}</span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2.5 bg-stone-50 px-3 py-2 rounded-xl border border-stone-100">
+                <div className="w-7 h-7 rounded-lg bg-emerald-100 text-emerald-600 flex items-center justify-center shrink-0 text-xs">
+                  ⏱️
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-[10px] text-stone-400 font-medium">Giao dự kiến</span>
+                  <span className="text-xs font-bold text-stone-800">~{deliveryTime} phút</span>
+                </div>
+              </div>
             </div>
           </div>
 

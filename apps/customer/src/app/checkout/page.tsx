@@ -11,7 +11,7 @@ const MAX_SHIPPING_FEE = 50000;
 const MAX_COD_THRESHOLD = 300000;
 const POINTS_EXPIRE_DAYS = 90;
 
-// Tọa độ TP. Hà Tĩnh
+// Tọa độ TP. Hà Tĩnh (Mặc định)
 const HA_TINH_LAT = 18.3381;
 const HA_TINH_LNG = 105.9058;
 
@@ -416,6 +416,10 @@ export default function CheckoutPage() {
       const pointsExpiryDate = new Date();
       pointsExpiryDate.setDate(pointsExpiryDate.getDate() + POINTS_EXPIRE_DAYS);
 
+      // 📍 BỔ SUNG TỌA ĐỘ VÀ SHIPPER NOTE VÀO PAYLOAD ĐƠN HÀNG
+      const customerLat = 18.36744296989065;
+      const customerLng = 105.96332788467407;
+
       const newOrder = {
         userId: user.uid,
         customerName: finalCustomerName,
@@ -426,6 +430,16 @@ export default function CheckoutPage() {
         note,
         paymentMethod,
         paymentCode,
+
+        // Thông tin tọa độ giao hàng
+        lat: customerLat,
+        lng: customerLng,
+        location: {
+          latitude: customerLat,
+          longitude: customerLng,
+        },
+        // Ghi chú dành riêng cho shipper
+        shipperNote: note.trim() ? note : "Số nhà 04",
 
         subTotalPrice: rawTotalPrice,
         subTotalCostPrice: rawTotalCostPrice,
@@ -1079,11 +1093,10 @@ export default function CheckoutPage() {
 
       </form>
 
-      {/* 📋 MODAL CHI TIẾT PHÍ ÁP DỤNG (ĐÃ TĂNG padding-bottom LÊN pb-32 ĐỂ TRÁNH BỊ THANH ĐIỀU HƯỚNG BOT CHE) */}
+      {/* 📋 MODAL CHI TIẾT PHÍ ÁP DỤNG */}
       {showFeeModal && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 backdrop-blur-xs animate-in fade-in duration-200">
           <div className="bg-white w-full max-w-lg rounded-t-3xl p-5 pb-32 space-y-4 max-h-[85vh] overflow-y-auto shadow-2xl">
-            {/* Header Modal */}
             <div className="flex justify-between items-center border-b border-slate-100 pb-3">
               <h3 className="font-black text-slate-900 text-sm">Phí áp dụng</h3>
               <button 
@@ -1095,15 +1108,11 @@ export default function CheckoutPage() {
               </button>
             </div>
 
-            {/* Danh sách các phụ phí chi tiết */}
             <div className="space-y-4 text-xs">
-              {/* Phí thời tiết xấu (nếu có) */}
               {rainFee > 0 && (
                 <div className="space-y-1">
                   <div className="flex justify-between font-semibold text-slate-800">
-                    <span className="flex items-center gap-1.5">
-                      🌧️ Phí thời tiết xấu
-                    </span>
+                    <span>🌧️ Phí thời tiết xấu</span>
                     <span>{formatCurrency(rainFee)}</span>
                   </div>
                   <p className="text-slate-400 text-[11px] leading-relaxed">
@@ -1112,13 +1121,10 @@ export default function CheckoutPage() {
                 </div>
               )}
 
-              {/* Phí giờ cao điểm hoặc Phí đêm */}
               {peakHourFee > 0 && (
                 <div className="space-y-1">
                   <div className="flex justify-between font-semibold text-slate-800">
-                    <span className="flex items-center gap-1.5">
-                      {peakHourFee === 7000 ? "🌙 Phí phụ phí đêm" : "⏰ Phí giờ cao điểm"}
-                    </span>
+                    <span>{peakHourFee === 7000 ? "🌙 Phí phụ phí đêm" : "⏰ Phí giờ cao điểm"}</span>
                     <span>{formatCurrency(peakHourFee)}</span>
                   </div>
                   <p className="text-slate-400 text-[11px] leading-relaxed">
@@ -1130,7 +1136,6 @@ export default function CheckoutPage() {
               )}
             </div>
 
-            {/* Tổng cộng phụ phí */}
             <div className="border-t border-slate-100 pt-3 flex justify-between items-center font-bold text-slate-900 text-sm">
               <span>Tổng cộng</span>
               <span className="text-orange-600 font-black">{formatCurrency(totalAppliedFee)}</span>
@@ -1147,12 +1152,11 @@ export default function CheckoutPage() {
         </div>
       )}
 
-{/* 🎫 MODAL CHỌN VOUCHER */}
+      {/* 🎫 MODAL CHỌN VOUCHER */}
       {showVoucherModal && (
         <div className="fixed inset-0 z-[99] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-0 sm:p-4 animate-in fade-in duration-200">
           <div className="bg-slate-100 w-full max-w-lg rounded-t-3xl sm:rounded-3xl shadow-2xl max-h-[85vh] flex flex-col overflow-hidden">
             
-            {/* Header Modal */}
             <div className="bg-white px-4 py-3.5 border-b border-slate-200 flex items-center justify-between shrink-0">
               <div>
                 <h3 className="text-sm font-black text-slate-900">Chọn Voucher Cho-Online</h3>
@@ -1167,7 +1171,6 @@ export default function CheckoutPage() {
               </button>
             </div>
 
-            {/* Ô nhập mã nhanh & Tabs phân loại */}
             <div className="bg-white px-4 py-3 border-b border-slate-200 space-y-2.5 shrink-0">
               <div className="flex gap-2">
                 <input
@@ -1217,7 +1220,6 @@ export default function CheckoutPage() {
               </div>
             </div>
 
-            {/* Danh sách Voucher dạng thẻ - Đã giảm pb để cuộn mượt hơn */}
             <div className="flex-1 overflow-y-auto p-4 pb-6 space-y-3">
               {filteredModalVouchers.length === 0 ? (
                 <div className="text-center py-12 space-y-2">
@@ -1305,7 +1307,6 @@ export default function CheckoutPage() {
               )}
             </div>
 
-            {/* Footer Modal Xác Nhận - Đã bổ sung padding bottom an toàn để không bị dính đáy */}
             <div className="bg-white p-3.5 pb-[calc(14px+env(safe-area-inset-bottom))] border-t border-slate-200 shrink-0">
               <button
                 type="button"

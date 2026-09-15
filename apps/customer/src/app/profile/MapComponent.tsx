@@ -1,7 +1,6 @@
-// src/app/profile/MapComponent.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useRef } from "react";
 import { MapContainer, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -15,24 +14,28 @@ L.Icon.Default.mergeOptions({
   shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
 });
 
-function MapEventsHandler({ onCenterChange }: { onCenterChange: (lat: number, lng: number) => void }) {
+function MapEventsHandler({ 
+  onCenterChange, 
+  mapRef 
+}: { 
+  onCenterChange: (lat: number, lng: number) => void;
+  mapRef: React.MutableRefObject<L.Map | null>;
+}) {
   const map = useMap();
+  
+  // Lưu lại instance của map vào ref ngay khi khởi tạo
+  mapRef.current = map;
+
   useMapEvents({
     moveend() {
       const center = map.getCenter();
       onCenterChange(center.lat, center.lng);
     },
-  });
-  return null;
-}
-
-function MapController({ lat, lng }: { lat: number; lng: number }) {
-  const map = useMap();
-  useEffect(() => {
-    if (lat && lng) {
-      map.flyTo([lat, lng], 18, { duration: 1 });
+    // Đảm bảo khi người dùng zoom bằng tay, Leaflet cập nhật lại kích thước khung mượt mà
+    zoomend() {
+      map.invalidateSize();
     }
-  }, [lat, lng, map]);
+  });
   return null;
 }
 
@@ -43,18 +46,17 @@ interface MapComponentProps {
 }
 
 export default function MapComponent({ lat, lng, onSelect }: MapComponentProps) {
-  const [currentCenter, setCurrentCenter] = useState({ lat, lng });
-  const [isLocating, setIsLocating] = useState(false);
+  // Dùng useRef để lưu trữ tâm ban đầu cố định, không tạo lại state gây re-render giật map
+  const initialCenter = useRef({ lat, lng });
+  const mapRef = useRef<L.Map | null>(null);
   
-  // Trạng thái chuyển đổi bản đồ: 'voyager' (Đường phố chi tiết) hoặc 'satellite' (Vệ tinh)
+  const [isLocating, setIsLocating] = useState(false);
   const [mapType, setMapType] = useState<"voyager" | "satellite">("satellite");
 
   const handleCenterChange = (newLat: number, newLng: number) => {
-    setCurrentCenter({ lat: newLat, lng: newLng });
     onSelect(newLat, newLng);
   };
 
-// Nút bấm lấy GPS (có cơ chế fallback an toàn nếu thiết bị không hỗ trợ)
   const handleGetMyGPS = () => {
     if (!navigator.geolocation) {
       alert("Trình duyệt không hỗ trợ định vị!");
@@ -65,15 +67,17 @@ export default function MapComponent({ lat, lng, onSelect }: MapComponentProps) 
       (position) => {
         const newLat = position.coords.latitude;
         const newLng = position.coords.longitude;
-        setCurrentCenter({ lat: newLat, lng: newLng });
         onSelect(newLat, newLng);
+        
+        // Di chuyển mượt đến vị trí GPS mà không ép thay đổi mức zoom hiện tại của người dùng
+        if (mapRef.current) {
+          mapRef.current.panTo([newLat, newLng]);
+        }
         setIsLocating(false);
       },
       (error) => {
-        console.warn("Không lấy được GPS phần cứng, giữ nguyên vị trí hiện tại:", error);
-        // Thay vì hiện alert lỗi, ta thông báo nhẹ nhàng và giữ nguyên map để người dùng tự kéo
+        console.warn("Không lấy được GPS phần cứng:", error);
         setIsLocating(false);
-        // Không gọi alert phiền phức nữa, người dùng có thể tự kéo map đến nhà mình rất trực quan
       },
       { enableHighAccuracy: false, timeout: 5000, maximumAge: 60000 }
     );
@@ -92,7 +96,7 @@ export default function MapComponent({ lat, lng, onSelect }: MapComponentProps) 
         <span>{isLocating ? "Đang tìm..." : "Vị trí của tôi"}</span>
       </button>
 
-      {/* 🗺️ THANH LỰA CHỌN KIỂU BẢN ĐỒ (VỆ TINH / ĐƯỜNG PHỐ) */}
+      {/* 🗺️ THANH LỰA CHỌN KIỂU BẢN ĐỒ */}
       <div className="absolute top-4 left-4 z-[1000] bg-white/90 backdrop-blur-md p-1 rounded-xl shadow-lg border border-stone-200 flex gap-1">
         <button
           type="button"
@@ -130,21 +134,18 @@ export default function MapComponent({ lat, lng, onSelect }: MapComponentProps) 
       </div>
 
       <MapContainer
-        center={[currentCenter.lat, currentCenter.lng]}
+        center={[initialCenter.current.lat, initialCenter.current.lng]}
         zoom={18}
         maxZoom={20}
         style={{ width: "100%", height: "100%", zIndex: 1 }}
       >
-        {/* Thay đổi linh hoạt TileLayer dựa vào lựa chọn của người dùng */}
         {mapType === "satellite" ? (
-          // Nền ảnh vệ tinh toàn cầu (ArcGIS World Imagery - Tải mượt, không lỗi xám)
           <TileLayer
             attribution='Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP'
             url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
             maxZoom={19}
           />
         ) : (
-          // Nền bản đồ đường phố chi tiết, hiện đại (CartoDB Voyager)
           <TileLayer
             attribution='&copy; <a href="https://carto.com/">CARTO</a>'
             url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
@@ -152,8 +153,7 @@ export default function MapComponent({ lat, lng, onSelect }: MapComponentProps) 
           />
         )}
         
-        <MapController lat={currentCenter.lat} lng={currentCenter.lng} />
-        <MapEventsHandler onCenterChange={handleCenterChange} />
+        <MapEventsHandler onCenterChange={handleCenterChange} mapRef={mapRef} />
       </MapContainer>
     </div>
   );

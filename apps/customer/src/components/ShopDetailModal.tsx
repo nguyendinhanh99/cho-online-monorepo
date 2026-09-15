@@ -33,6 +33,8 @@ interface Product {
   stockProgress?: number;
   category: string;
   reviews: Review[];
+  distanceStr?: string;
+  deliveryTime?: number;
 }
 
 interface CartItem {
@@ -64,6 +66,7 @@ interface ShopDetailModalProps {
   onAddToCart?: (product: Product) => void;
   onProductClick?: (product: Product) => void;
   formatCurrency: (amount: number) => string;
+  deliveryTime?: number;
 }
 
 type FilterType = "all" | "discount" | "bestseller" | "price_asc" | "price_desc";
@@ -77,6 +80,7 @@ export default function ShopDetailModal({
   onAddToCart,
   onProductClick,
   formatCurrency,
+  deliveryTime = 20, // Nhận prop thời gian giao hàng dự kiến (mặc định 20 phút nếu không truyền)
 }: ShopDetailModalProps) {
   // 1. HOOKS
   const [activeTab, setActiveTab] = useState<"menu" | "info">("menu");
@@ -211,11 +215,11 @@ export default function ShopDetailModal({
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-0 sm:p-4 animate-fade-in">
       {/* Container chính dạng Fullscreen trên Mobile và Box căn giữa gọn gàng trên Desktop */}
       <div className="bg-stone-100 w-full h-full sm:h-[88vh] sm:max-w-xl sm:rounded-3xl overflow-hidden shadow-2xl relative flex flex-col">
-        
+
         {/* HEADER CỐ ĐỊNH (Tối ưu vuốt, thao tác 1 tay & nút đóng rõ ràng không bị đè) */}
         <div className="bg-gradient-to-r from-[#ff4500] via-[#ee4d2d] to-[#d0011b] relative px-4 py-3 shrink-0 flex items-center justify-between text-white shadow-md z-20">
           <div className="absolute top-1.5 left-1/2 -translate-x-1/2 w-10 h-1 bg-white/40 rounded-full sm:hidden" />
-          
+
           <button
             onClick={onClose}
             className="flex items-center gap-1.5 bg-black/20 hover:bg-black/40 px-3 py-1.5 rounded-full text-xs font-bold backdrop-blur-md transition active:scale-95 cursor-pointer"
@@ -263,15 +267,21 @@ export default function ShopDetailModal({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 mt-2.5 pt-2 border-t border-stone-100 text-xs text-stone-600 text-center items-center">
-            <div className="flex items-center justify-center gap-1">
+          {/* 🚀 UI/UX MỚI: Thanh thông tin Đánh giá, Khoảng cách & Thời gian giao hàng */}
+          <div className="grid grid-cols-3 gap-2 mt-2.5 pt-2.5 border-t border-stone-100 text-xs items-center">
+            <div className="flex items-center justify-center gap-1 bg-amber-50 py-1.5 px-2 rounded-xl border border-amber-100">
               <span className="text-amber-500 font-black">★ {(shop.rating || 5.0).toFixed(1)}</span>
-              <span className="text-stone-400 text-[10px] font-medium">({shop.reviewCount || 0}+ đánh giá)</span>
+              <span className="text-stone-400 text-[9px] font-medium">({shop.reviewCount || 0}+)</span>
             </div>
-            
-            <div className="border-l border-stone-200/80 text-emerald-600 font-bold text-[11px] truncate px-1 flex items-center justify-center gap-1">
-              <span>🚀 Giao đến:</span>
-              <span>{distanceStr}</span>
+
+            <div className="flex items-center justify-center gap-1 bg-stone-50 py-1.5 px-2 rounded-xl border border-stone-100">
+              <span className="text-xs">📍</span>
+              <span className="text-stone-700 font-bold text-[11px] truncate">{distanceStr}</span>
+            </div>
+
+            <div className="flex items-center justify-center gap-1 bg-emerald-50 py-1.5 px-2 rounded-xl border border-emerald-100">
+              <span className="text-xs">⏱️</span>
+              <span className="text-emerald-700 font-bold text-[11px]">~{deliveryTime} phút</span>
             </div>
           </div>
         </div>
@@ -292,7 +302,7 @@ export default function ShopDetailModal({
               <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#ee4d2d] rounded-full" />
             )}
           </button>
-          
+
           <button
             onClick={() => setActiveTab("info")}
             className={`py-2.5 relative transition cursor-pointer ${
@@ -650,6 +660,29 @@ export default function ShopDetailModal({
                       {distanceStr}
                     </div>
                     <div className="text-[9px] text-stone-400">Khoảng cách</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 🚀 Bổ sung thông tin chi tiết khoảng cách & thời gian ở Tab Thông tin */}
+              <div className="bg-white p-3.5 rounded-2xl border border-stone-200/80 space-y-2.5 text-xs">
+                <h4 className="font-bold text-stone-400 uppercase text-[10px] tracking-wider">
+                  Thời gian & Vận chuyển
+                </h4>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="flex items-center gap-2.5 bg-stone-50 px-3 py-2.5 rounded-xl border border-stone-100">
+                    <span className="text-base">📍</span>
+                    <div>
+                      <div className="text-[9px] text-stone-400">Khoảng cách</div>
+                      <div className="font-bold text-stone-800">{distanceStr}</div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2.5 bg-stone-50 px-3 py-2.5 rounded-xl border border-stone-100">
+                    <span className="text-base">⏱️</span>
+                    <div>
+                      <div className="text-[9px] text-stone-400">Thời gian giao</div>
+                      <div className="font-bold text-stone-800">~{deliveryTime} phút</div>
+                    </div>
                   </div>
                 </div>
               </div>

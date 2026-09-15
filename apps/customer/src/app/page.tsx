@@ -87,7 +87,6 @@ interface Voucher {
   isActive?: boolean;
 }
 
-
 const HOT_KEYWORDS = ["Cơm tấm", "Trà sữa", "Bún đậu", "Bánh mì", "Cafe", "Gà rán", "Lẩu"];
 
 const CATEGORY_SUGGESTIONS: Record<string, string[]> = {
@@ -147,6 +146,27 @@ const CATEGORY_SUGGESTIONS: Record<string, string[]> = {
   ]
 };
 
+// ==========================================
+// HÀM TÍNH TOÁN THỜI GIAN GIAO HÀNG & ETA
+// ==========================================
+const calculateTravelTime = (distanceKm: number): number => {
+  let v = 20; // km/h mặc định
+  if (distanceKm >= 20) v = 40;
+  else if (distanceKm >= 10) v = 35;
+  else if (distanceKm >= 5) v = 30;
+  else if (distanceKm >= 3) v = 25;
+  else v = 20;
+
+  const travelTimeMinutes = (distanceKm / v) * 60;
+  return Math.round(travelTimeMinutes);
+};
+
+const calculateETA = (prepTime: number = 15, distanceKm: number = 2, shipperToShopTime: number = 5): number => {
+  const travelTime = calculateTravelTime(distanceKm);
+  const baseTime = Math.max(prepTime, shipperToShopTime);
+  return baseTime + travelTime;
+};
+
 const formatSoldCount = (count: number = 0): string => {
   if (count >= 1000) {
     return `${(count / 1000).toFixed(1).replace(".0", "")}k`;
@@ -163,7 +183,6 @@ export default function HomePage() {
   const [savedVouchers, setSavedVouchers] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // State ẩn/hiện header khi cuộn trang
   const [showNavbar, setShowNavbar] = useState(true);
   const lastScrollY = useRef(0);
 
@@ -306,8 +325,6 @@ export default function HomePage() {
             lat: userData.lat ?? userData.location?.latitude ?? prev.lat,
             lng: userData.lng ?? userData.location?.longitude ?? prev.lng,
           }));
-        } else {
-          console.warn("⚠️ Không tìm thấy thông tin user trong Firestore với SĐT:", targetPhone);
         }
       } catch (error) {
         console.error("❌ Lỗi khi tải thông tin user từ Firebase:", error);
@@ -348,26 +365,88 @@ export default function HomePage() {
   const totalCartCount = isMounted ? getTotalItems() : 0;
 
   const calculateHaversineDistance = useCallback(
-    (lat1: number, lon1: number, lat2: number, lon2: number): { text: string; km: number } => {
-      const R = 6371;
-      const dLat = ((lat2 - lat1) * Math.PI) / 180;
-      const dLon = ((lon2 - lon1) * Math.PI) / 180;
+    (
+      lat1: number,
+      lon1: number,
+      lat2: number,
+      lon2: number
+    ): {
+      text: string;
+      km: number;
+      meters: number;
+      straightLineKm: number;
+      roadFactor: number;
+    } => {
+      if (
+        !Number.isFinite(lat1) ||
+        !Number.isFinite(lon1) ||
+        !Number.isFinite(lat2) ||
+        !Number.isFinite(lon2) ||
+        Math.abs(lat1) > 90 ||
+        Math.abs(lat2) > 90 ||
+        Math.abs(lon1) > 180 ||
+        Math.abs(lon2) > 180
+      ) {
+        return {
+          text: "0m",
+          km: 0,
+          meters: 0,
+          straightLineKm: 0,
+          roadFactor: 1,
+        };
+      }
+
+      const EARTH_RADIUS_KM = 6371.0088;
+      const ROAD_FACTOR = 1.13;
+
+      const toRad = (degree: number) => {
+        return (degree * Math.PI) / 180;
+      };
+
+      const φ1 = toRad(lat1);
+      const φ2 = toRad(lat2);
+      const Δφ = toRad(lat2 - lat1);
+      const Δλ = toRad(lon2 - lon1);
+
+      const sinLat = Math.sin(Δφ / 2);
+      const sinLng = Math.sin(Δλ / 2);
 
       const a =
-        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos((lat1 * Math.PI) / 180) *
-        Math.cos((lat2 * Math.PI) / 180) *
-        Math.sin(dLon / 2) *
-        Math.sin(dLon / 2);
+        sinLat * sinLat +
+        Math.cos(φ1) *
+        Math.cos(φ2) *
+        sinLng *
+        sinLng;
 
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      const safeA = Math.min(1, Math.max(0, a));
+      const c = 2 * Math.atan2(Math.sqrt(safeA), Math.sqrt(1 - safeA));
+      const straightLineKm = EARTH_RADIUS_KM * c;
+      let roadKm = straightLineKm * ROAD_FACTOR;
 
-      const dist = R * c + 1;
-
-      if (dist < 1) {
-        return { text: `${Math.max(100, Math.round(dist * 1000))}m`, km: dist };
+      if (straightLineKm < 0.1) {
+        roadKm = straightLineKm;
       }
-      return { text: `${dist.toFixed(1)} km`, km: dist };
+
+      const km = Number(roadKm.toFixed(2));
+      const meters = Math.round(km * 1000);
+
+      if (km < 1) {
+        return {
+          text: `${meters} m`,
+          km,
+          meters,
+          straightLineKm,
+          roadFactor: ROAD_FACTOR,
+        };
+      }
+
+      return {
+        text: `${km.toFixed(2)} km`,
+        km,
+        meters,
+        straightLineKm,
+        roadFactor: ROAD_FACTOR,
+      };
     },
     []
   );
@@ -505,17 +584,13 @@ export default function HomePage() {
 
         merchantsSnap.forEach((docSnap) => {
           const data = docSnap.data();
-
           const bCat = data.businessCategory;
-          // Chỉ lấy các merchant có businessCategory là F&B hoặc FNB
           const isFnb =
             bCat === "F&B" ||
             bCat === "FNB" ||
             (typeof bCat === "string" && (bCat.toLowerCase() === "f&b" || bCat.toLowerCase() === "fnb" || bCat.toLowerCase().includes("f&b") || bCat.toLowerCase().includes("fnb")));
 
-          if (!isFnb) {
-            return;
-          }
+          if (!isFnb) return;
 
           const rawAddress =
             data.address ||
@@ -527,7 +602,6 @@ export default function HomePage() {
 
           const lat = data.lat ?? data.latitude ?? data.pickupLocation?.latitude ?? null;
           const lng = data.lng ?? data.longitude ?? data.pickupLocation?.longitude ?? null;
-
           const rawAvatar = data.avatar || data.avatarUrl || "";
           const defaultAvatar = "https://images.unsplash.com/photo-1554118811-1e0d58224f24?w=100";
 
@@ -566,11 +640,8 @@ export default function HomePage() {
         const fetchedProducts: Product[] = [];
         productsSnap.forEach((docSnap) => {
           const data = docSnap.data();
-
           const isAvailable = data.isAvailable !== undefined ? Boolean(data.isAvailable) : true;
           if (!isAvailable) return;
-
-          // ⭐ Chỉ nhận các sản phẩm có isConsumerGood = false
           if (data.isConsumerGood !== false) return;
 
           const rawShopId = String(data.shopId || data.merchantId || "");
@@ -579,7 +650,6 @@ export default function HomePage() {
           );
 
           if (!matchedShopKey) return;
-
           const matchedShop = shopMap[matchedShopKey];
 
           const images: string[] =
@@ -673,6 +743,7 @@ export default function HomePage() {
   const handleAddToCartModal = (product: any, quantity: number) => {
     addItem(product, product.distance || 0, quantity);
   };
+
   const calculatedDistances = useMemo(() => {
     const distances: Record<string, { text: string; km: number }> = {};
     const userLat = userInfo.lat;
@@ -699,6 +770,14 @@ export default function HomePage() {
     [calculatedDistances]
   );
 
+  const getShopDistanceKm = useCallback(
+    (shop?: Shop): number => {
+      if (!shop) return 2.0;
+      return calculatedDistances[shop.id]?.km ?? 2.0;
+    },
+    [calculatedDistances]
+  );
+
   const formatCurrency = useCallback((amount: number) => {
     return new Intl.NumberFormat("vi-VN", {
       style: "currency",
@@ -706,7 +785,7 @@ export default function HomePage() {
     }).format(amount);
   }, []);
 
-  const handleAddToCart = useCallback(
+const handleAddToCart = useCallback(
     async (product: Product) => {
       const shop = shops[product.shopId];
       if (shop && !shop.isOpen) {
@@ -714,15 +793,22 @@ export default function HomePage() {
         return;
       }
 
-      const distance = getShopDistance(shop);
+      const distanceStr = getShopDistance(shop);
+      const distanceKm = getShopDistanceKm(shop);
+      
+      // Tính toán thời gian giao hàng chuẩn bằng hàm ETA
+      const deliveryTime = calculateETA(product.prepTime || 15, distanceKm);
 
-      (addItemToCart as any)(product, distance);
+      // Truyền đủ 4 tham số: product, distanceStr, quantity (1), deliveryTime 
+      // (hoặc đổi vị trí quantity/deliveryTime tùy theo store của bạn)
+      (addItemToCart as any)(product, distanceStr, 1, deliveryTime);
+      
       showToast("Thêm vào giỏ thành công! 🛒", `Đã thêm "${product.name}" vào giỏ hàng.`, "success");
 
       const { isDiscountActive } = checkProductDiscount(product);
       await updateProductStockInDb(product.id, 1, isDiscountActive);
     },
-    [shops, getShopDistance, addItemToCart, checkProductDiscount, showToast]
+    [shops, getShopDistance, getShopDistanceKm, addItemToCart, checkProductDiscount, showToast]
   );
 
   const { activeDeals, upcomingDeals } = useMemo(() => {
@@ -740,7 +826,6 @@ export default function HomePage() {
     });
 
     active.sort((a, b) => b._discountPercent - a._discountPercent);
-
     return { activeDeals: active, upcomingDeals: upcoming };
   }, [products, checkProductDiscount]);
 
@@ -909,9 +994,8 @@ export default function HomePage() {
       </div>
 
       <div
-        className={`sticky top-0 z-40 bg-gradient-to-r from-[#ff4500] via-[#ee4d2d] to-[#ff6036] p-3 text-white shadow-md space-y-2.5 transition-transform duration-300 ${
-          showNavbar ? "translate-y-0" : "-translate-y-full"
-        }`}
+        className={`sticky top-0 z-40 bg-gradient-to-r from-[#ff4500] via-[#ee4d2d] to-[#ff6036] p-3 text-white shadow-md space-y-2.5 transition-transform duration-300 ${showNavbar ? "translate-y-0" : "-translate-y-full"
+          }`}
       >
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 overflow-hidden flex-1 bg-black/15 px-3 py-1.5 rounded-full border border-white/25 shadow-inner">
@@ -1055,7 +1139,6 @@ export default function HomePage() {
             {vouchers.map((v) => {
               const isSaved = savedVouchers.includes(v.code);
               const isFreeship = v.applyType === "SHIPPING";
-
               const used = v.usedCount || 0;
               const limit = v.usageLimit || 100;
               const usedPercent = Math.min(100, Math.round((used / limit) * 100));
@@ -1063,22 +1146,19 @@ export default function HomePage() {
               return (
                 <div
                   key={v.id}
-                  className={`min-w-[210px] max-w-[210px] bg-white rounded-xl border shadow-2xs flex overflow-hidden relative transition-all duration-200 hover:shadow-sm ${
-                    isSaved ? "border-emerald-500/80 bg-emerald-50/10" : "border-amber-200/80"
-                  }`}
+                  className={`min-w-[210px] max-w-[210px] bg-white rounded-xl border shadow-2xs flex overflow-hidden relative transition-all duration-200 hover:shadow-sm ${isSaved ? "border-emerald-500/80 bg-emerald-50/10" : "border-amber-200/80"
+                    }`}
                 >
                   <div
-                    className={`w-14 shrink-0 flex flex-col items-center justify-center p-1.5 text-white text-center relative border-r border-dashed border-stone-200 ${
-                      isFreeship
-                        ? "bg-gradient-to-br from-emerald-500 to-teal-600"
-                        : "bg-gradient-to-br from-orange-500 to-[#ee4d2d]"
-                    }`}
+                    className={`w-14 shrink-0 flex flex-col items-center justify-center p-1.5 text-white text-center relative border-r border-dashed border-stone-200 ${isFreeship
+                      ? "bg-gradient-to-br from-emerald-500 to-teal-600"
+                      : "bg-gradient-to-br from-orange-500 to-[#ee4d2d]"
+                      }`}
                   >
                     <span className="text-lg mb-0.5">{isFreeship ? "🚚" : "💵"}</span>
                     <span className="text-[8px] font-black uppercase leading-tight">
                       {isFreeship ? "FREESHIP" : "GIẢM ĐƠN"}
                     </span>
-
                     <div className="absolute -top-1.5 -right-1.5 w-3 h-3 rounded-full bg-[#f4f5f7]"></div>
                     <div className="absolute -bottom-1.5 -right-1.5 w-3 h-3 rounded-full bg-[#f4f5f7]"></div>
                   </div>
@@ -1095,7 +1175,6 @@ export default function HomePage() {
                           </span>
                         )}
                       </div>
-
                       <h4 className="text-[10px] font-bold text-stone-800 leading-tight mt-1 line-clamp-1">
                         {v.title}
                       </h4>
@@ -1110,9 +1189,8 @@ export default function HomePage() {
                       </div>
                       <div className="w-full bg-stone-100 h-1 rounded-full overflow-hidden">
                         <div
-                          className={`h-full rounded-full transition-all duration-300 ${
-                            isFreeship ? "bg-teal-500" : "bg-[#ee4d2d]"
-                          }`}
+                          className={`h-full rounded-full transition-all duration-300 ${isFreeship ? "bg-teal-500" : "bg-[#ee4d2d]"
+                            }`}
                           style={{ width: `${usedPercent > 0 ? usedPercent : 10}%` }}
                         ></div>
                       </div>
@@ -1121,11 +1199,10 @@ export default function HomePage() {
                     <button
                       type="button"
                       onClick={() => handleSaveVoucher(v.code)}
-                      className={`w-full py-0.5 text-[9px] font-bold rounded-md transition active:scale-95 flex items-center justify-center cursor-pointer ${
-                        isSaved
-                          ? "bg-emerald-600 text-white"
-                          : "bg-orange-100 hover:bg-orange-200 text-[#ee4d2d]"
-                      }`}
+                      className={`w-full py-0.5 text-[9px] font-bold rounded-md transition active:scale-95 flex items-center justify-center cursor-pointer ${isSaved
+                        ? "bg-emerald-600 text-white"
+                        : "bg-orange-100 hover:bg-orange-200 text-[#ee4d2d]"
+                        }`}
                     >
                       <span>{isSaved ? "✓ Đã lưu" : "Lưu mã"}</span>
                     </button>
@@ -1149,7 +1226,7 @@ export default function HomePage() {
 
         <div className="flex gap-2 overflow-x-auto no-scrollbar py-1">
           {[
-            { id: "smart_lunch", label: "Cơm Trưa Nóng", emoji: "🍱", desc: "No lâu, ship 15p", category: "🍚 Cơm & Món chính", filter: "fast" },
+            { id: "smart_lunch", label: "Cơm Trưa Nóng", emoji: "🍱", desc: "No lâu, ship nhanh", category: "🍚 Cơm & Món chính", filter: "fast" },
             { id: "smart_milktea", label: "Trà Sữa & Cafe", emoji: "🧋", desc: "Giảm sâu hôm nay", category: "🧋 Trà sữa", filter: "discount" },
             { id: "smart_noodle", label: "Bún - Phở - Mì", emoji: "🍜", desc: "Nước dùng đậm đà", category: "🍜 Bún, Phở & Mì", filter: "recommend" },
             { id: "smart_dessert", label: "Bánh & Tráng Miệng", emoji: "🍰", desc: "Chè bưởi, Bánh ngọt", category: "🍰 Bánh & Tráng miệng", filter: "recommend" },
@@ -1170,20 +1247,16 @@ export default function HomePage() {
                     setSearchQuery("");
                   }
                 }}
-                className={`min-w-[130px] rounded-xl p-2.5 cursor-pointer transition-all duration-200 shrink-0 space-y-1 relative active:scale-95 border ${
-                  isActive
-                    ? "bg-gradient-to-br from-orange-500 to-[#ee4d2d] text-white border-[#ee4d2d] shadow-md -translate-y-0.5 ring-2 ring-orange-300/50"
-                    : "bg-gradient-to-br from-orange-50/60 to-amber-50/30 border-orange-200/60 text-stone-800 hover:border-[#ee4d2d] hover:bg-orange-50"
-                }`}
+                className={`min-w-[130px] rounded-xl p-2.5 cursor-pointer transition-all duration-200 shrink-0 space-y-1 relative active:scale-95 border ${isActive
+                  ? "bg-gradient-to-br from-orange-500 to-[#ee4d2d] text-white border-[#ee4d2d] shadow-md -translate-y-0.5 ring-2 ring-orange-300/50"
+                  : "bg-gradient-to-br from-orange-50/60 to-amber-50/30 border-orange-200/60 text-stone-800 hover:border-[#ee4d2d] hover:bg-orange-50"
+                  }`}
               >
                 <div className="flex items-center justify-between">
                   <span className="text-2xl">{item.emoji}</span>
                   <span
-                    className={`text-[9px] font-black px-1.5 py-0.5 rounded-md transition ${
-                      isActive
-                        ? "bg-white text-[#ee4d2d] shadow-xs"
-                        : "bg-orange-200/60 text-orange-900"
-                    }`}
+                    className={`text-[9px] font-black px-1.5 py-0.5 rounded-md transition ${isActive ? "bg-white text-[#ee4d2d] shadow-xs" : "bg-orange-200/60 text-orange-900"
+                      }`}
                   >
                     {isActive ? "✓ Đang chọn" : "Gợi ý"}
                   </span>
@@ -1213,11 +1286,10 @@ export default function HomePage() {
           <button
             key={f.id}
             onClick={() => setQuickFilter(f.id)}
-            className={`px-3 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap border transition cursor-pointer shrink-0 ${
-              quickFilter === f.id
-                ? "bg-[#ee4d2d] text-white border-[#ee4d2d] shadow-2xs"
-                : "bg-white text-stone-600 border-stone-200 hover:bg-stone-50"
-            }`}
+            className={`px-3 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap border transition cursor-pointer shrink-0 ${quickFilter === f.id
+              ? "bg-[#ee4d2d] text-white border-[#ee4d2d] shadow-2xs"
+              : "bg-white text-stone-600 border-stone-200 hover:bg-stone-50"
+              }`}
           >
             {f.label}
           </button>
@@ -1250,13 +1322,9 @@ export default function HomePage() {
                 {flashTab === "active" && (
                   <div className="flex items-center gap-1 text-[11px] font-bold text-stone-700">
                     <span className="text-stone-400 font-normal">Kết thúc:</span>
-                    {flashTab === "active" && (
-                      <div className="flex items-center gap-1 text-[11px] font-bold text-stone-700">
-                        <span className="bg-stone-900 text-amber-400 font-mono text-[10px] px-1.5 py-0.5 rounded-md font-bold">
-                          {formatTime(timeLeft)}
-                        </span>
-                      </div>
-                    )}
+                    <span className="bg-stone-900 text-amber-400 font-mono text-[10px] px-1.5 py-0.5 rounded-md font-bold">
+                      {formatTime(timeLeft)}
+                    </span>
                   </div>
                 )}
               </div>
@@ -1269,11 +1337,10 @@ export default function HomePage() {
             <div className="flex items-center gap-2 border-b border-stone-100 pb-2">
               <button
                 onClick={() => setFlashTab("active")}
-                className={`text-xs font-bold px-3 py-1 rounded-full transition cursor-pointer flex items-center gap-1.5 ${
-                  flashTab === "active"
-                    ? "bg-rose-50 text-[#ee4d2d] border border-rose-200 shadow-2xs"
-                    : "text-stone-500 hover:bg-stone-100"
-                }`}
+                className={`text-xs font-bold px-3 py-1 rounded-full transition cursor-pointer flex items-center gap-1.5 ${flashTab === "active"
+                  ? "bg-rose-50 text-[#ee4d2d] border border-rose-200 shadow-2xs"
+                  : "text-stone-500 hover:bg-stone-100"
+                  }`}
               >
                 <span>🔥 Đang ưu đãi</span>
                 <span className="bg-[#ee4d2d] text-white text-[9px] px-1.5 py-0.2 rounded-full font-extrabold">
@@ -1284,11 +1351,10 @@ export default function HomePage() {
               {upcomingDeals.length > 0 && (
                 <button
                   onClick={() => setFlashTab("upcoming")}
-                  className={`text-xs font-bold px-3 py-1 rounded-full transition cursor-pointer flex items-center gap-1.5 ${
-                    flashTab === "upcoming"
-                      ? "bg-amber-50 text-amber-700 border border-amber-200 shadow-2xs"
-                      : "text-stone-500 hover:bg-stone-100"
-                  }`}
+                  className={`text-xs font-bold px-3 py-1 rounded-full transition cursor-pointer flex items-center gap-1.5 ${flashTab === "upcoming"
+                    ? "bg-amber-50 text-amber-700 border border-amber-200 shadow-2xs"
+                    : "text-stone-500 hover:bg-stone-100"
+                    }`}
                 >
                   <span>⏰ Sắp mở bán</span>
                   <span className="bg-amber-500 text-white text-[9px] px-1.5 py-0.2 rounded-full font-extrabold">
@@ -1305,29 +1371,30 @@ export default function HomePage() {
               const isShopOpen = shop ? shop.isOpen : true;
               const { isDiscountActive, currentPrice, discountPercent } = checkProductDiscount(item);
               const distanceStr = getShopDistance(shop);
+              const distanceKm = getShopDistanceKm(shop);
+
+              const estimatedDeliveryTime = calculateETA(item.prepTime || 15, distanceKm);
 
               const startTimeFormatted = item.discountStartTime
                 ? new Date(item.discountStartTime).toLocaleTimeString("vi-VN", {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })
                 : "Sắp tới";
 
               return (
                 <div
                   key={item.id}
                   onClick={() => setSelectedProduct(item)}
-                  className={`min-w-[145px] max-w-[145px] bg-white border border-stone-200/95 rounded-2xl p-2 relative flex flex-col justify-between shadow-2xs cursor-pointer hover:border-[#ee4d2d] hover:shadow-md transition-all duration-200 group ${
-                    !isShopOpen ? "opacity-60" : ""
-                  }`}
+                  className={`min-w-[145px] max-w-[145px] bg-white border border-stone-200/95 rounded-2xl p-2 relative flex flex-col justify-between shadow-2xs cursor-pointer hover:border-[#ee4d2d] hover:shadow-md transition-all duration-200 group ${!isShopOpen ? "opacity-60" : ""
+                    }`}
                 >
                   {discountPercent > 0 && (
                     <div
-                      className={`absolute top-0 right-0 text-white text-[10px] font-black px-2 py-0.5 rounded-bl-xl rounded-tr-2xl z-10 shadow-xs flex flex-col items-center leading-none ${
-                        discountPercent >= 30
-                          ? "bg-gradient-to-b from-purple-600 via-red-600 to-[#ee4d2d] animate-pulse"
-                          : "bg-gradient-to-b from-red-500 to-[#ee4d2d]"
-                      }`}
+                      className={`absolute top-0 right-0 text-white text-[10px] font-black px-2 py-0.5 rounded-bl-xl rounded-tr-2xl z-10 shadow-xs flex flex-col items-center leading-none ${discountPercent >= 30
+                        ? "bg-gradient-to-b from-purple-600 via-red-600 to-[#ee4d2d] animate-pulse"
+                        : "bg-gradient-to-b from-red-500 to-[#ee4d2d]"
+                        }`}
                     >
                       <span>-{discountPercent}%</span>
                       <span className="text-[7px] font-medium uppercase text-amber-200">
@@ -1349,9 +1416,10 @@ export default function HomePage() {
                         📍 {distanceStr}
                       </span>
 
-                      <span className="absolute bottom-1 left-1 bg-black/60 text-white text-[8px] font-semibold px-1.5 py-0.5 rounded-md backdrop-blur-xs">
-                        ⏱️ ~{item.prepTime || 15}p
-                      </span>
+                      {/* UI HIỂN THỊ THỜI GIAN GIAO HÀNG (ETA) CHO FLASH DEAL */}
+                      <div className="absolute bottom-1 left-1 bg-orange-600 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-md shadow-xs flex items-center gap-0.5">
+                        <span>⚡ Giao ~{estimatedDeliveryTime}p</span>
+                      </div>
 
                       {item.discountBadge && (
                         <div className="absolute top-6 left-1">
@@ -1437,11 +1505,10 @@ export default function HomePage() {
                         <button
                           type="button"
                           onClick={(e) => toggleReminder(item.id, e)}
-                          className={`w-full text-[10px] font-bold py-1 rounded-lg transition active:scale-95 flex items-center justify-center gap-1 border cursor-pointer ${
-                            reminders[item.id]
-                              ? "bg-amber-500 text-white border-amber-500"
-                              : "bg-white text-amber-600 border-amber-400 hover:bg-amber-50"
-                          }`}
+                          className={`w-full text-[10px] font-bold py-1 rounded-lg transition active:scale-95 flex items-center justify-center gap-1 border cursor-pointer ${reminders[item.id]
+                            ? "bg-amber-500 text-white border-amber-500"
+                            : "bg-white text-amber-600 border-amber-400 hover:bg-amber-50"
+                            }`}
                         >
                           <span>{reminders[item.id] ? "✓ Đã đặt" : "🔔 Nhắc tôi"}</span>
                         </button>
@@ -1459,11 +1526,10 @@ export default function HomePage() {
         <div className="flex gap-2 overflow-x-auto no-scrollbar px-3 whitespace-nowrap">
           <button
             onClick={() => setActiveTab("all")}
-            className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition shrink-0 cursor-pointer ${
-              activeTab === "all"
-                ? "bg-stone-900 text-white border-stone-900 shadow-xs"
-                : "bg-stone-50 text-stone-600 border-stone-200 hover:bg-stone-100"
-            }`}
+            className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition shrink-0 cursor-pointer ${activeTab === "all"
+              ? "bg-stone-900 text-white border-stone-900 shadow-xs"
+              : "bg-stone-50 text-stone-600 border-stone-200 hover:bg-stone-100"
+              }`}
           >
             🌈 Tất cả ({products.length})
           </button>
@@ -1472,11 +1538,10 @@ export default function HomePage() {
             <button
               key={cat}
               onClick={() => setActiveTab(cat)}
-              className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition shrink-0 cursor-pointer ${
-                activeTab === cat
-                  ? "bg-orange-500 text-white border-orange-500 shadow-xs"
-                  : "bg-white text-stone-600 border-stone-200 hover:bg-stone-50"
-              }`}
+              className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition shrink-0 cursor-pointer ${activeTab === cat
+                ? "bg-orange-500 text-white border-orange-500 shadow-xs"
+                : "bg-white text-stone-600 border-stone-200 hover:bg-stone-50"
+                }`}
             >
               {cat}
             </button>
@@ -1517,13 +1582,15 @@ export default function HomePage() {
             const isShopOpen = shop ? shop.isOpen : true;
             const { isDiscountActive, currentPrice, discountPercent } = checkProductDiscount(product);
             const distanceStr = getShopDistance(shop);
+            const distanceKm = getShopDistanceKm(shop);
+
+            const estimatedDeliveryTime = calculateETA(product.prepTime || 15, distanceKm);
 
             return (
               <div
                 key={product.id}
-                className={`bg-white rounded-xl overflow-hidden border border-stone-200/70 shadow-2xs hover:shadow-md transition flex flex-col justify-between group ${
-                  !isShopOpen ? "opacity-75" : ""
-                }`}
+                className={`bg-white rounded-xl overflow-hidden border border-stone-200/70 shadow-2xs hover:shadow-md transition flex flex-col justify-between group ${!isShopOpen ? "opacity-75" : ""
+                  }`}
               >
                 <div>
                   {shop && (
@@ -1535,32 +1602,24 @@ export default function HomePage() {
                           distance: distanceStr,
                         });
                       }}
-                      className="flex items-center gap-1.5 p-1.5 bg-stone-50 border-b border-stone-100 cursor-pointer hover:bg-stone-100 transition"
+                      className="flex items-center justify-between p-1.5 bg-stone-50 border-b border-stone-100 cursor-pointer hover:bg-stone-100 transition"
                     >
-                      <div className="relative shrink-0">
+                      <div className="flex items-center gap-1.5 overflow-hidden flex-1">
                         <img
                           src={shop.avatar}
                           alt={shop.name}
                           loading="lazy"
-                          className="w-4 h-4 rounded-full object-cover border border-stone-200"
+                          className="w-4 h-4 rounded-full object-cover border border-stone-200 shrink-0"
                         />
-                      </div>
-                      <div className="flex-1 overflow-hidden">
                         <span className="text-[10px] font-bold text-stone-700 truncate block">
                           {shop.name}
                         </span>
-                        {shop.address && (
-                          <span className="text-[8px] text-stone-400 truncate block">
-                            📍 {shop.address}
-                          </span>
-                        )}
                       </div>
-                      {!isShopOpen && (
-                        <span className="text-[8px] bg-stone-200 text-stone-600 font-bold px-1 rounded-xs shrink-0">
-                          Đóng cửa
-                        </span>
-                      )}
-                      <span className="text-[8px] text-stone-400 shrink-0">➔</span>
+
+                      {/* UI HIỂN THỊ THỜI GIAN GIAO HÀNG TẠI HEADER CỬA HÀNG */}
+                      <span className="bg-orange-100 text-[#ee4d2d] font-bold text-[9px] px-1.5 py-0.5 rounded-md shrink-0 flex items-center gap-0.5 ml-1">
+                        ⏱️ ~{estimatedDeliveryTime}p
+                      </span>
                     </div>
                   )}
 
@@ -1593,10 +1652,6 @@ export default function HomePage() {
                           -{discountPercent}%
                         </div>
                       )}
-
-                      <div className="absolute bottom-1 right-1 bg-black/60 text-white text-[8px] px-1.5 py-0.5 rounded-md backdrop-blur-xs font-semibold">
-                        ⏱️ ~{product.prepTime || 15}p
-                      </div>
                     </div>
 
                     <div className="p-2 space-y-1">
@@ -1634,10 +1689,6 @@ export default function HomePage() {
                     <div className="flex items-center gap-1 flex-wrap truncate">
                       <span className="text-amber-500 font-bold">★ {shop?.rating || 5.0}</span>
                       <span className="text-stone-400 font-medium">({product.reviewCount || 0})</span>
-                      <span>•</span>
-                      <span className="font-bold text-emerald-600">📍 {distanceStr}</span>
-                      <span>•</span>
-                      <span className="text-stone-500 font-medium truncate">Đã bán {formatSoldCount(product.soldCount)}</span>
                     </div>
 
                     <button
@@ -1647,11 +1698,10 @@ export default function HomePage() {
                         e.stopPropagation();
                         handleAddToCart(product);
                       }}
-                      className={`${
-                        isShopOpen
-                          ? "bg-[#ee4d2d] hover:bg-[#d73f20] cursor-pointer"
-                          : "bg-stone-300 text-stone-500 cursor-not-allowed"
-                      } active:scale-95 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg transition shadow-2xs flex items-center gap-0.5 shrink-0 ml-1`}
+                      className={`${isShopOpen
+                        ? "bg-[#ee4d2d] hover:bg-[#d73f20] cursor-pointer"
+                        : "bg-stone-300 text-stone-500 cursor-not-allowed"
+                        } active:scale-95 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg transition shadow-2xs flex items-center gap-0.5 shrink-0 ml-1`}
                     >
                       <span>{isShopOpen ? "+ Thêm" : "Tạm đóng"}</span>
                     </button>
@@ -1662,10 +1712,11 @@ export default function HomePage() {
           })}
         </div>
       )}
-
       <ProductDetailModal
         product={selectedProduct}
         shop={selectedProduct && shops ? (shops[selectedProduct.shopId] as any) : undefined}
+        distanceStr={selectedProduct && shops[selectedProduct.shopId] ? getShopDistance(shops[selectedProduct.shopId]) : "2.0 km"}
+        deliveryTime={selectedProduct && shops[selectedProduct.shopId] ? calculateETA(selectedProduct.prepTime || 15, getShopDistanceKm(shops[selectedProduct.shopId])) : 20}
         onClose={() => setSelectedProduct(null)}
         onAddToCart={handleAddToCartModal}
         formatCurrency={formatCurrency}
@@ -1675,6 +1726,7 @@ export default function HomePage() {
         shop={selectedShop}
         products={products}
         distanceStr={selectedShop ? getShopDistance(selectedShop) : "2.0 km"}
+        deliveryTime={selectedShop ? calculateETA(15, getShopDistanceKm(selectedShop)) : 20}
         onClose={() => setSelectedShop(null)}
         onAddToCart={handleAddToCart}
         onProductClick={(prod) => {

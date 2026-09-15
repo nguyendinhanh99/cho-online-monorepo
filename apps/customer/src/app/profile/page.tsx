@@ -7,7 +7,6 @@ import { onAuthStateChanged, signOut, User } from "firebase/auth";
 import { doc, getDoc, setDoc } from "firebase/firestore";
 import dynamic from "next/dynamic";
 
-// Khai báo dynamic import component bản đồ Leaflet để tránh lỗi SSR (window is not defined) trong Next.js
 const MapComponent = dynamic(() => import("./MapComponent"), {
   ssr: false,
   loading: () => (
@@ -19,7 +18,6 @@ const MapComponent = dynamic(() => import("./MapComponent"), {
 
 type AddressType = "home" | "office";
 
-// Danh sách các ngân hàng phổ biến tại Việt Nam theo chuẩn VietQR
 const VIETNAM_BANKS = [
   { code: "MB", name: "MBBank - Ngân hàng Quân Đội", shortName: "MBBank" },
   { code: "VCB", name: "Vietcombank - NH Ngoại Thương Việt Nam", shortName: "Vietcombank" },
@@ -45,40 +43,33 @@ export default function ProfilePage() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // 🎁 State lưu trữ số điểm đã tích lũy
   const [points, setPoints] = useState<number>(0);
-
-  // State quản lý Modal Điều khoản sử dụng
   const [showTermsModal, setShowTermsModal] = useState(false);
 
-  // 🗺️ State quản lý Modal Chọn Bản Đồ trực tiếp
   const [showMapModal, setShowMapModal] = useState(false);
   const [tempCoords, setTempCoords] = useState<{ lat: number; lng: number }>({
     lat: 18.33722,
     lng: 105.90153,
   });
 
-  // State quản lý Toast thông báo
   const [toast, setToast] = useState<Toast | null>(null);
 
-  // Thông tin liên hệ
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
 
-  // Phân rã địa chỉ theo chuẩn Quán Cafe Chill
-  const [province, setProvince] = useState("Hà Tĩnh");
-  const [district, setDistrict] = useState("Thành Sen");
-  const [ward, setWard] = useState("");
-  const [streetAddress, setStreetAddress] = useState("75 Hải Thượng Lãn Ông");
+  // 🏠 Địa chỉ tự động từ bản đồ/GPS (Chỉ đọc - Người dùng không sửa trực tiếp)
+  const [streetAddress, setStreetAddress] = useState("75 Hải Thượng Lãn Ông, Hà Tĩnh");
+  
+  // 📝 Thêm ô ghi chú thủ công riêng cho shipper
+  const [shipperNote, setShipperNote] = useState("");
+
   const [addressType, setAddressType] = useState<AddressType>("home");
   const [isDefault, setIsDefault] = useState(true);
 
-  // 🏦 Thông tin Tài khoản Ngân hàng Hoàn tiền
   const [bankCode, setBankCode] = useState("MB");
   const [bankAccount, setBankAccount] = useState("");
   const [bankOwner, setBankOwner] = useState("");
 
-  // Tọa độ GPS (Tọa độ quán Cafe Chill mặc định)
   const [coords, setCoords] = useState<{ lat: number | null; lng: number | null }>({
     lat: 18.33722,
     lng: 105.90153,
@@ -86,9 +77,6 @@ export default function ProfilePage() {
 
   const [saving, setSaving] = useState(false);
   const [isLocating, setIsLocating] = useState(false);
-  const [isSearchingAddress, setIsSearchingAddress] = useState(false);
-
-  const isFirstLoad = useRef(true);
 
   const showToast = (message: string, type: "success" | "error" | "info" = "info") => {
     setToast({ message, type });
@@ -97,15 +85,12 @@ export default function ProfilePage() {
     }, 3500);
   };
 
-  // Hàm reset dữ liệu theo mặc định địa chỉ quán
   const resetFormState = () => {
     setFullName("");
     setPhone("");
     setPoints(0);
-    setProvince("Hà Tĩnh");
-    setDistrict("Thành Sen");
-    setWard("");
-    setStreetAddress("75 Hải Thượng Lãn Ông");
+    setStreetAddress("75 Hải Thượng Lãn Ông, Hà Tĩnh");
+    setShipperNote("");
     setAddressType("home");
     setIsDefault(true);
     setCoords({ lat: 18.33722, lng: 105.90153 });
@@ -124,22 +109,17 @@ export default function ProfilePage() {
             const data = userDoc.data();
             setFullName(data.fullName || currentUser.displayName || "");
             setPhone(data.phone || currentUser.phoneNumber || "");
-
-            // 🎁 LẤY SỐ ĐIỂM TÍCH LŨY
             setPoints(data.points || 0);
 
-            // 🏦 LẤY THÔNG TIN NGÂN HÀNG HOÀN TIỀN
             if (data.refundBankInfo) {
               setBankCode(data.refundBankInfo.bankCode || "MB");
               setBankAccount(data.refundBankInfo.bankAccount || "");
               setBankOwner(data.refundBankInfo.bankOwner || "");
             }
 
-            if (data.addressDetails) {
-              setProvince(data.addressDetails.province || "Hà Tĩnh");
-              setDistrict(data.addressDetails.district || "Thành Sen");
-              setWard(data.addressDetails.ward || "");
-              setStreetAddress(data.addressDetails.streetAddress || "75 Hải Thượng Lãn Ông");
+            if (data.addressDetails?.streetAddress) {
+              setStreetAddress(data.addressDetails.streetAddress);
+              setShipperNote(data.addressDetails.shipperNote || "");
               setAddressType(data.addressDetails.addressType || "home");
               setIsDefault(data.addressDetails.isDefault ?? true);
             } else if (data.address) {
@@ -172,55 +152,6 @@ export default function ProfilePage() {
     }).format(amount);
   };
 
-  // ✅ Ghép chuỗi địa chỉ đầy đủ sạch đẹp, không lặp lại
-  const getFullAddressString = () => {
-    const parts = [streetAddress.trim(), ward.trim(), district.trim(), province.trim()].filter(Boolean);
-    return parts.join(", ");
-  };
-
-  // Tự động tìm tọa độ khi người dùng nhập địa chỉ tay
-  const fetchCoordsFromAddress = async (searchQuery: string) => {
-    if (!searchQuery || searchQuery.trim().length < 5) return;
-
-    try {
-      setIsSearchingAddress(true);
-      const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}`
-      );
-      const data = await res.json();
-
-      if (data && data.length > 0) {
-        setCoords({
-          lat: parseFloat(data[0].lat),
-          lng: parseFloat(data[0].lon),
-        });
-      }
-    } catch (err) {
-      console.warn("Lỗi tìm tọa độ:", err);
-    } finally {
-      setIsSearchingAddress(false);
-    }
-  };
-
-  useEffect(() => {
-    if (loading || !user) return;
-
-    if (isFirstLoad.current) {
-      isFirstLoad.current = false;
-      return;
-    }
-
-    const fullAddr = getFullAddressString();
-    if (!fullAddr || fullAddr.trim().length < 5) return;
-
-    const timer = setTimeout(() => {
-      fetchCoordsFromAddress(fullAddr);
-    }, 800);
-
-    return () => clearTimeout(timer);
-  }, [province, district, ward, streetAddress]);
-
-  // ✅ CẬP NHẬT TỌA ĐỘ GPS HIỆN TẠI
   const handleGetCurrentLocation = () => {
     if (!navigator.geolocation) {
       showToast("Trình duyệt không hỗ trợ định vị GPS!", "error");
@@ -230,34 +161,37 @@ export default function ProfilePage() {
     setIsLocating(true);
 
     navigator.geolocation.getCurrentPosition(
-      (position) => {
+      async (position) => {
         const lat = position.coords.latitude;
         const lng = position.coords.longitude;
         
         setCoords({ lat, lng });
+
+        // Tự động dịch GPS ra địa chỉ tiếng Việt
+        try {
+          const res = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1&accept-language=vi`
+          );
+          const data = await res.json();
+          if (data && data.display_name) {
+            setStreetAddress(data.display_name);
+          }
+        } catch (err) {
+          console.warn("Lỗi dịch GPS:", err);
+        }
+
         setIsLocating(false);
-        showToast("📍 Đã cập nhật tọa độ GPS thành công!", "success");
+        showToast("📍 Đã cập nhật tọa độ GPS & địa chỉ thành công!", "success");
       },
       (error) => {
         console.warn("Lỗi vị trí GPS:", error.code, error.message);
-
-        let errorMsg = "Không thể lấy vị trí. Vui lòng bật GPS!";
-        if (error.code === error.PERMISSION_DENIED) {
-          errorMsg = "Bạn đã từ chối quyền truy cập vị trí trên trình duyệt!";
-        } else if (error.code === error.POSITION_UNAVAILABLE) {
-          errorMsg = "Thông tin vị trí hiện không khả dụng!";
-        } else if (error.code === error.TIMEOUT) {
-          errorMsg = "Hết thời gian chờ phản hồi GPS!";
-        }
-
-        showToast(errorMsg, "error");
+        showToast("Không thể lấy vị trí. Vui lòng bật GPS!", "error");
         setIsLocating(false);
       },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      { enableHighAccuracy: false, timeout: 5000, maximumAge: 60000 }
     );
   };
 
-  // 🗺️ Mở Modal bản đồ chọn vị trí
   const openMapPickerModal = () => {
     setTempCoords({
       lat: coords.lat || 18.33722,
@@ -266,11 +200,26 @@ export default function ProfilePage() {
     setShowMapModal(true);
   };
 
-  // 🗺️ Xác nhận vị trí từ Modal Bản Đồ
-  const handleConfirmMapLocation = () => {
+  const handleConfirmMapLocation = async () => {
     setCoords(tempCoords);
     setShowMapModal(false);
-    showToast("📍 Đã chốt vị trí trên bản đồ thành công!", "success");
+
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${tempCoords.lat}&lon=${tempCoords.lng}&zoom=18&addressdetails=1&accept-language=vi`
+      );
+      const data = await res.json();
+
+      if (data && data.display_name) {
+        setStreetAddress(data.display_name);
+        showToast("📍 Đã cập nhật địa chỉ tự động từ bản đồ!", "success");
+      } else {
+        showToast("📍 Đã chốt vị trí trên bản đồ thành công!", "success");
+      }
+    } catch (err) {
+      console.warn("Lỗi dịch ngược tọa độ:", err);
+      showToast("📍 Đã chốt vị trí trên bản đồ thành công!", "success");
+    }
   };
 
   const handleSaveInfo = async (e: React.FormEvent) => {
@@ -279,22 +228,19 @@ export default function ProfilePage() {
 
     setSaving(true);
     try {
-      const fullAddress = getFullAddressString();
       const selectedBank = VIETNAM_BANKS.find((b) => b.code === bankCode);
 
       const profileData = {
         fullName,
         phone,
-        address: fullAddress,
+        address: streetAddress.trim(),
+        shipperNote: shipperNote.trim(),
         addressDetails: {
-          province,
-          district,
-          ward,
-          streetAddress,
+          streetAddress: streetAddress.trim(),
+          shipperNote: shipperNote.trim(),
           addressType,
           isDefault,
         },
-        // 🏦 Lưu cấu hình hoàn tiền
         refundBankInfo: {
           bankCode,
           bankName: selectedBank?.shortName || bankCode,
@@ -322,14 +268,11 @@ export default function ProfilePage() {
   const handleSignOut = async () => {
     try {
       await signOut(auth);
-      
       localStorage.removeItem("user_shipping_info");
       localStorage.clear();
       sessionStorage.clear();
-
       setUser(null);
       resetFormState();
-
       router.push("/login");
     } catch (error) {
       console.warn("Lỗi đăng xuất:", error);
@@ -370,7 +313,6 @@ export default function ProfilePage() {
 
   return (
     <div className="bg-stone-100 min-h-screen py-6 px-3 relative">
-      {/* UI TOAST THÔNG BÁO */}
       {toast && (
         <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 transition-all duration-300 animate-in fade-in slide-in-from-top-4">
           <div
@@ -411,7 +353,7 @@ export default function ProfilePage() {
           </div>
         </div>
 
-        {/* 🎁 THẺ ĐIỂM THƯỞNG */}
+        {/* THẺ ĐIỂM THƯỞNG */}
         <div className="bg-gradient-to-r from-emerald-600 to-teal-700 text-white p-4 rounded-2xl shadow-md space-y-3 relative overflow-hidden">
           <div className="absolute -right-4 -bottom-4 text-emerald-500/20 text-8xl font-black select-none pointer-events-none">
             🎁
@@ -442,27 +384,10 @@ export default function ProfilePage() {
 
         {/* FORM THÔNG TIN THANH TOÁN VÀ ĐỊA CHỈ */}
         <form onSubmit={handleSaveInfo} className="bg-white rounded-2xl border border-stone-200/80 shadow-2xs overflow-hidden">
-          <div className="px-4 py-3.5 border-b border-stone-100 bg-stone-50/50 flex flex-wrap items-center justify-between gap-2">
+          <div className="px-4 py-3.5 border-b border-stone-100 bg-stone-50/50">
             <h2 className="font-bold text-xs text-stone-800 uppercase tracking-wide flex items-center gap-1.5">
               <span className="text-emerald-600">📍</span> Địa chỉ & Tài khoản nhận tiền
             </h2>
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={handleGetCurrentLocation}
-                disabled={isLocating}
-                className="text-[11px] text-emerald-600 hover:text-emerald-700 font-semibold flex items-center gap-1 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200 active:scale-95 transition disabled:opacity-50"
-              >
-                📍 {isLocating ? "Đang lấy..." : "GPS hiện tại"}
-              </button>
-              <button
-                type="button"
-                onClick={openMapPickerModal}
-                className="text-[11px] text-white bg-emerald-600 hover:bg-emerald-700 font-semibold px-2.5 py-1 rounded-lg shadow-xs active:scale-95 transition"
-              >
-                🗺️ Chọn bản đồ
-              </button>
-            </div>
           </div>
 
           <div className="p-4 space-y-4 text-xs">
@@ -497,75 +422,76 @@ export default function ProfilePage() {
               </div>
             </div>
 
-            {/* TỈNH / HUYỆN / XÃ */}
-            <div className="grid grid-cols-3 gap-2">
-              <div>
-                <label className="font-semibold text-stone-700 block mb-1">
-                  Tỉnh / Thành <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Tỉnh/TP"
-                  value={province}
-                  onChange={(e) => setProvince(e.target.value)}
-                  className="w-full bg-stone-50 px-2.5 py-2.5 rounded-xl border border-stone-200 outline-none focus:bg-white focus:border-emerald-600 font-medium transition"
-                />
+            {/* 🌟 KHU VỰC CHỌN VỊ TRÍ NỔI BẬT */}
+            <div className="p-3.5 bg-gradient-to-br from-emerald-50 via-teal-50/50 to-stone-50 rounded-2xl border-2 border-emerald-500/40 shadow-xs space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-stone-800 text-xs flex items-center gap-1.5">
+                  <span className="text-emerald-600 text-sm">📍</span> Chọn nhanh tọa độ giao hàng:
+                </span>
+                <span className="text-[10px] bg-emerald-600 text-white px-2 py-0.5 rounded-full font-semibold shadow-2xs">
+                  Bắt buộc
+                </span>
               </div>
 
-              <div>
-                <label className="font-semibold text-stone-700 block mb-1">
-                  Quận / Huyện <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Quận/Huyện"
-                  value={district}
-                  onChange={(e) => setDistrict(e.target.value)}
-                  className="w-full bg-stone-50 px-2.5 py-2.5 rounded-xl border border-stone-200 outline-none focus:bg-white focus:border-emerald-600 font-medium transition"
-                />
-              </div>
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  onClick={handleGetCurrentLocation}
+                  disabled={isLocating}
+                  className="flex items-center justify-center gap-2 bg-white hover:bg-emerald-50 text-emerald-700 border-2 border-emerald-500 font-bold py-3 px-3 rounded-xl shadow-xs transition active:scale-95 cursor-pointer disabled:opacity-50"
+                >
+                  <span className="text-base">📍</span>
+                  <span className="truncate">{isLocating ? "Đang lấy vị trí..." : "GPS hiện tại"}</span>
+                </button>
 
-              <div>
-                <label className="font-semibold text-stone-700 block mb-1">
-                  Phường / Xã
-                </label>
-                <input
-                  type="text"
-                  placeholder="Phường/Xã"
-                  value={ward}
-                  onChange={(e) => setWard(e.target.value)}
-                  className="w-full bg-stone-50 px-2.5 py-2.5 rounded-xl border border-stone-200 outline-none focus:bg-white focus:border-emerald-600 font-medium transition"
-                />
+                <button
+                  type="button"
+                  onClick={openMapPickerModal}
+                  className="flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 px-3 rounded-xl shadow-md transition active:scale-95 cursor-pointer"
+                >
+                  <span className="text-base">🗺️</span>
+                  <span className="truncate">Chọn bản đồ</span>
+                </button>
               </div>
             </div>
 
-            {/* ĐỊA CHỈ CHI TIẾT */}
+            {/* 🔒 Ô ĐỊA CHỈ TỰ ĐỘNG TỪ BẢN ĐỒ (READ-ONLY) */}
             <div>
-              <label className="font-semibold text-stone-700 block mb-1">
-                Địa chỉ chi tiết <span className="text-rose-500">*</span>
+              <label className="font-semibold text-stone-700 block mb-1 flex items-center justify-between">
+                <span>Địa chỉ tự động từ bản đồ <span className="text-rose-500">*</span></span>
+                <span className="text-[10px] text-amber-600 font-normal">🔒 Hệ thống tự cập nhật</span>
               </label>
               <textarea
                 rows={2}
-                required
-                placeholder="Số nhà, tên đường, thôn/xóm, tên tòa nhà..."
+                readOnly
                 value={streetAddress}
-                onChange={(e) => setStreetAddress(e.target.value)}
-                className="w-full bg-stone-50 p-3 rounded-xl border border-stone-200 outline-none focus:bg-white focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600 font-medium transition resize-none"
+                className="w-full bg-stone-100 text-stone-600 p-3 rounded-xl border border-stone-200 outline-none font-medium resize-none cursor-not-allowed select-none"
               />
               <p className="text-[10px] text-stone-400 mt-1">
-                💡 Hãy ghi rõ số nhà, ngõ/ngách để shipper giao hàng chính xác nhất.
+                💡 Ô này lấy tự động từ GPS hoặc nút &quot;Chọn bản đồ&quot; phía trên để tính phí ship chuẩn xác.
+              </p>
+            </div>
+
+            {/* 📝 Ô NHẬP THỦ CÔNG CHO SHIPPER */}
+            <div>
+              <label className="font-semibold text-stone-700 block mb-1">
+                Ghi chú thêm cho Shipper <span className="text-stone-400 font-normal">(Tùy chọn)</span>
+              </label>
+              <input
+                type="text"
+                placeholder="Ví dụ: Nhà cổng màu xanh, ngõ rộng ô tô vào được..."
+                value={shipperNote}
+                onChange={(e) => setShipperNote(e.target.value)}
+                className="w-full bg-stone-50 px-3 py-2.5 rounded-xl border border-stone-200 outline-none focus:bg-white focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600 font-medium transition"
+              />
+              <p className="text-[10px] text-stone-400 mt-1">
+                🚚 Shipper sẽ nhìn thấy dòng ghi chú này để dễ dàng tìm nhà bạn hơn.
               </p>
             </div>
 
             {/* TRẠNG THÁI TỌA ĐỘ GPS / BẢN ĐỒ */}
             <div className="p-2.5 bg-stone-50 rounded-xl border border-stone-200/60 flex items-center justify-between text-[11px]">
-              {isSearchingAddress ? (
-                <span className="text-amber-600 font-medium animate-pulse flex items-center gap-1">
-                  <span>⏳</span> Đang khớp tọa độ bản đồ...
-                </span>
-              ) : coords.lat && coords.lng ? (
+              {coords.lat && coords.lng ? (
                 <span className="text-emerald-600 font-semibold flex items-center gap-1">
                   <span>✓ Tọa độ bản đồ:</span>
                   <span className="font-mono bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
@@ -574,7 +500,7 @@ export default function ProfilePage() {
                 </span>
               ) : (
                 <span className="text-stone-400">
-                  ⚠️ Chưa có tọa độ (Bấm "Chọn bản đồ" hoặc "GPS" để tính phí ship chuẩn)
+                  ⚠️ Chưa có tọa độ (Bấm &quot;Chọn bản đồ&quot; hoặc &quot;GPS&quot; để tính phí ship chuẩn)
                 </span>
               )}
             </div>
@@ -624,7 +550,7 @@ export default function ProfilePage() {
               </div>
             </div>
 
-            {/* 🏦 MỤC CẤU HÌNH NGÂN HÀNG HOÀN TIỀN */}
+            {/* MỤC CẤU HÌNH NGÂN HÀNG HOÀN TIỀN */}
             <div className="pt-3 border-t border-stone-200/80 space-y-3">
               <div className="flex items-center justify-between">
                 <label className="font-bold text-stone-800 text-xs flex items-center gap-1.5">
@@ -684,7 +610,7 @@ export default function ProfilePage() {
             {/* BUTTON SUBMIT */}
             <button
               type="submit"
-              disabled={saving || isSearchingAddress}
+              disabled={saving}
               className="w-full mt-2 bg-emerald-600 hover:bg-emerald-700 active:scale-98 text-white font-bold py-3 rounded-xl text-xs uppercase tracking-wider transition shadow-sm cursor-pointer disabled:opacity-50"
             >
               {saving ? "Đang lưu..." : "Lưu thông tin hồ sơ"}
@@ -720,7 +646,7 @@ export default function ProfilePage() {
         </button>
       </div>
 
-      {/* 🗺️ MODAL CHỌN VỊ TRÍ TRÊN BẢN ĐỒ */}
+      {/* MODAL CHỌN VỊ TRÍ TRÊN BẢN ĐỒ */}
       {showMapModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200">
           <div className="bg-white w-full max-w-xl rounded-3xl shadow-2xl flex flex-col h-[520px] overflow-hidden border border-stone-200">
@@ -740,7 +666,6 @@ export default function ProfilePage() {
               </button>
             </div>
 
-            {/* Vùng chứa bản đồ Leaflet động */}
             <div className="flex-1 relative z-0">
               <MapComponent
                 lat={tempCoords.lat}
@@ -749,7 +674,6 @@ export default function ProfilePage() {
               />
             </div>
 
-            {/* Footer Modal bản đồ */}
             <div className="p-3.5 border-t border-stone-100 bg-stone-50 flex items-center justify-between gap-3">
               <span className="text-[11px] font-mono text-stone-600 truncate">
                 Tọa độ chọn: {tempCoords.lat.toFixed(5)}, {tempCoords.lng.toFixed(5)}
@@ -766,7 +690,7 @@ export default function ProfilePage() {
         </div>
       )}
 
-      {/* 📜 MODAL ĐIỀU KHOẢN SỬ DỤNG */}
+      {/* MODAL ĐIỀU KHOẢN SỬ DỤNG */}
       {showTermsModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200">
           <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl flex flex-col max-h-[85vh] overflow-hidden border border-stone-200">
@@ -802,7 +726,7 @@ export default function ProfilePage() {
               <div>
                 <h4 className="font-bold text-stone-800 text-xs mb-1">2. Đặt hàng & Xác nhận đơn hàng</h4>
                 <p>
-                  - Đơn hàng chỉ được coi là xác nhận thành công sau khi hệ thống thông báo trạng thái "Đã tiếp nhận" hoặc "Cửa hàng xác nhận".<br />
+                  - Đơn hàng chỉ được coi là xác nhận thành công sau khi hệ thống thông báo trạng thái &quot;Đã tiếp nhận&quot; hoặc &quot;Cửa hàng xác nhận&quot;.<br />
                   - Chợ Online có quyền hủy đơn trong trường hợp sản phẩm hết hàng, sai giá niêm yết do lỗi kỹ thuật hoặc không liên lạc được với người nhận.
                 </p>
               </div>

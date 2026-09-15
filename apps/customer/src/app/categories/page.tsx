@@ -140,6 +140,8 @@ const formatSoldCount = (count: number = 0): string => {
 };
 
 export default function CategoriesPage() {
+  const [isMounted, setIsMounted] = useState<boolean>(false);
+
   const [activeTab, setActiveTab] = useState<string>("all");
   const [quickFilter, setQuickFilter] = useState<string>("recommend");
   const [shops, setShops] = useState<Record<string, Shop>>({});
@@ -161,6 +163,8 @@ export default function CategoriesPage() {
 
   // 📜 Xử lý sự kiện cuộn trang
   useEffect(() => {
+    setIsMounted(true);
+
     const handleScroll = () => {
       const currentScrollY = window.scrollY;
       if (currentScrollY <= 10) {
@@ -337,7 +341,7 @@ export default function CategoriesPage() {
   };
 
   useEffect(() => {
-    let isMounted = true;
+    let isMountedFetch = true;
     async function fetchData() {
       try {
         setLoading(true);
@@ -403,7 +407,6 @@ export default function CategoriesPage() {
           const isAvailable = data.isAvailable !== undefined ? Boolean(data.isAvailable) : true;
           if (!isAvailable) return;
 
-          // Điều kiện nhận sản phẩm có isConsumerGood === true
           if (data.isConsumerGood !== true) return;
 
           const rawShopId = String(data.shopId || data.merchantId || "");
@@ -478,7 +481,7 @@ export default function CategoriesPage() {
           });
         });
 
-        if (isMounted) {
+        if (isMountedFetch) {
           setShops(shopMap);
           setProducts(fetchedProducts);
           setVouchers(fetchedVouchers);
@@ -486,12 +489,14 @@ export default function CategoriesPage() {
       } catch (error) {
         console.error("Lỗi khi fetch dữ liệu:", error);
       } finally {
-        if (isMounted) setLoading(false);
+        if (isMountedFetch) {
+          setLoading(false);
+        }
       }
     }
     fetchData();
     return () => {
-      isMounted = false;
+      isMountedFetch = false;
     };
   }, []);
 
@@ -614,6 +619,15 @@ export default function CategoriesPage() {
 
     return result;
   }, [searchQuery, activeTab, quickFilter, rankedProducts, checkProductDiscount]);
+
+  // Chặn render giao diện chính cho đến khi client mount xong để tránh lệch SSR với localStorage
+  if (!isMounted) {
+    return (
+      <div className="bg-[#f0f4f8] min-h-screen flex items-center justify-center">
+        <div className="text-slate-500 text-xs font-bold animate-pulse">Đang tải ứng dụng...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-[#f0f4f8] min-h-screen pb-24 font-sans text-slate-800">
