@@ -128,7 +128,7 @@ export default function ProductDetailModal({
               reviewsList.push({
                 id: docSnap.id,
                 userName: reviewerName,
-                avatar: data.userAvatar || data.avatarUrl || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100",
+                avatar: data.userAvatar || data.avatarUrl || "",
                 rating: rating,
                 comment: comment,
                 date: revInfo.reviewedAt || revInfo.createdAt

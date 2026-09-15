@@ -5,6 +5,17 @@ import { useRouter } from "next/navigation";
 import { auth, db } from "@cho-online/firebase";
 import { onAuthStateChanged, signOut, User } from "firebase/auth";
 import { doc, getDoc, setDoc } from "firebase/firestore";
+import dynamic from "next/dynamic";
+
+// Khai báo dynamic import component bản đồ Leaflet để tránh lỗi SSR (window is not defined) trong Next.js
+const MapComponent = dynamic(() => import("./MapComponent"), {
+  ssr: false,
+  loading: () => (
+    <div className="h-full flex items-center justify-center bg-stone-100 text-xs text-stone-500 font-medium">
+      Đang tải bản đồ tương tác...
+    </div>
+  ),
+});
 
 type AddressType = "home" | "office";
 
@@ -39,6 +50,13 @@ export default function ProfilePage() {
 
   // State quản lý Modal Điều khoản sử dụng
   const [showTermsModal, setShowTermsModal] = useState(false);
+
+  // 🗺️ State quản lý Modal Chọn Bản Đồ trực tiếp
+  const [showMapModal, setShowMapModal] = useState(false);
+  const [tempCoords, setTempCoords] = useState<{ lat: number; lng: number }>({
+    lat: 18.33722,
+    lng: 105.90153,
+  });
 
   // State quản lý Toast thông báo
   const [toast, setToast] = useState<Toast | null>(null);
@@ -202,7 +220,7 @@ export default function ProfilePage() {
     return () => clearTimeout(timer);
   }, [province, district, ward, streetAddress]);
 
-  // ✅ CHỈ CẬP NHẬT TỌA ĐỘ GPS, KHÔNG GHI ĐÈ ĐỊA CHỈ CHI TIẾT
+  // ✅ CẬP NHẬT TỌA ĐỘ GPS HIỆN TẠI
   const handleGetCurrentLocation = () => {
     if (!navigator.geolocation) {
       showToast("Trình duyệt không hỗ trợ định vị GPS!", "error");
@@ -216,7 +234,6 @@ export default function ProfilePage() {
         const lat = position.coords.latitude;
         const lng = position.coords.longitude;
         
-        // Cập nhật tọa độ GPS
         setCoords({ lat, lng });
         setIsLocating(false);
         showToast("📍 Đã cập nhật tọa độ GPS thành công!", "success");
@@ -238,6 +255,22 @@ export default function ProfilePage() {
       },
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
     );
+  };
+
+  // 🗺️ Mở Modal bản đồ chọn vị trí
+  const openMapPickerModal = () => {
+    setTempCoords({
+      lat: coords.lat || 18.33722,
+      lng: coords.lng || 105.90153,
+    });
+    setShowMapModal(true);
+  };
+
+  // 🗺️ Xác nhận vị trí từ Modal Bản Đồ
+  const handleConfirmMapLocation = () => {
+    setCoords(tempCoords);
+    setShowMapModal(false);
+    showToast("📍 Đã chốt vị trí trên bản đồ thành công!", "success");
   };
 
   const handleSaveInfo = async (e: React.FormEvent) => {
@@ -409,22 +442,27 @@ export default function ProfilePage() {
 
         {/* FORM THÔNG TIN THANH TOÁN VÀ ĐỊA CHỈ */}
         <form onSubmit={handleSaveInfo} className="bg-white rounded-2xl border border-stone-200/80 shadow-2xs overflow-hidden">
-          <div className="px-4 py-3.5 border-b border-stone-100 bg-stone-50/50 flex items-center justify-between">
+          <div className="px-4 py-3.5 border-b border-stone-100 bg-stone-50/50 flex flex-wrap items-center justify-between gap-2">
             <h2 className="font-bold text-xs text-stone-800 uppercase tracking-wide flex items-center gap-1.5">
               <span className="text-emerald-600">📍</span> Địa chỉ & Tài khoản nhận tiền
             </h2>
-            <button
-              type="button"
-              onClick={handleGetCurrentLocation}
-              disabled={isLocating}
-              className="text-[11px] text-emerald-600 hover:text-emerald-700 font-semibold flex items-center gap-1 active:scale-95 transition disabled:opacity-50"
-            >
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-              </svg>
-              {isLocating ? "Đang lấy GPS..." : "Lấy tọa độ GPS"}
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={handleGetCurrentLocation}
+                disabled={isLocating}
+                className="text-[11px] text-emerald-600 hover:text-emerald-700 font-semibold flex items-center gap-1 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200 active:scale-95 transition disabled:opacity-50"
+              >
+                📍 {isLocating ? "Đang lấy..." : "GPS hiện tại"}
+              </button>
+              <button
+                type="button"
+                onClick={openMapPickerModal}
+                className="text-[11px] text-white bg-emerald-600 hover:bg-emerald-700 font-semibold px-2.5 py-1 rounded-lg shadow-xs active:scale-95 transition"
+              >
+                🗺️ Chọn bản đồ
+              </button>
+            </div>
           </div>
 
           <div className="p-4 space-y-4 text-xs">
@@ -503,7 +541,7 @@ export default function ProfilePage() {
               </div>
             </div>
 
-            {/* ĐỊA CHỈ CHI TIẾT (NGƯỜI DÙNG TỰ NHẬP CHÍNH XÁC, GPS KHÔNG GHI ĐÈ) */}
+            {/* ĐỊA CHỈ CHI TIẾT */}
             <div>
               <label className="font-semibold text-stone-700 block mb-1">
                 Địa chỉ chi tiết <span className="text-rose-500">*</span>
@@ -521,7 +559,7 @@ export default function ProfilePage() {
               </p>
             </div>
 
-            {/* TRẠNG THÁI TỌA ĐỘ GPS */}
+            {/* TRẠNG THÁI TỌA ĐỘ GPS / BẢN ĐỒ */}
             <div className="p-2.5 bg-stone-50 rounded-xl border border-stone-200/60 flex items-center justify-between text-[11px]">
               {isSearchingAddress ? (
                 <span className="text-amber-600 font-medium animate-pulse flex items-center gap-1">
@@ -536,7 +574,7 @@ export default function ProfilePage() {
                 </span>
               ) : (
                 <span className="text-stone-400">
-                  ⚠️ Chưa có tọa độ (Bấm Lấy tọa độ GPS để tính phí ship chuẩn)
+                  ⚠️ Chưa có tọa độ (Bấm "Chọn bản đồ" hoặc "GPS" để tính phí ship chuẩn)
                 </span>
               )}
             </div>
@@ -598,7 +636,6 @@ export default function ProfilePage() {
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {/* Chọn Ngân Hàng */}
                 <div className="sm:col-span-2">
                   <label className="font-semibold text-stone-700 block mb-1">
                     Tên Ngân hàng
@@ -616,7 +653,6 @@ export default function ProfilePage() {
                   </select>
                 </div>
 
-                {/* Số Tài Khoản */}
                 <div>
                   <label className="font-semibold text-stone-700 block mb-1">
                     Số tài khoản ngân hàng
@@ -630,7 +666,6 @@ export default function ProfilePage() {
                   />
                 </div>
 
-                {/* Tên Chủ Tài Khoản */}
                 <div>
                   <label className="font-semibold text-stone-700 block mb-1">
                     Tên chủ tài khoản (Viết hoa không dấu)
@@ -685,11 +720,56 @@ export default function ProfilePage() {
         </button>
       </div>
 
+      {/* 🗺️ MODAL CHỌN VỊ TRÍ TRÊN BẢN ĐỒ */}
+      {showMapModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="bg-white w-full max-w-xl rounded-3xl shadow-2xl flex flex-col h-[520px] overflow-hidden border border-stone-200">
+            <div className="p-4 border-b border-stone-100 bg-stone-50 flex items-center justify-between">
+              <div>
+                <h3 className="font-bold text-stone-800 text-sm uppercase tracking-wide">
+                  🗺️ Chọn vị trí giao hàng trên bản đồ
+                </h3>
+                <p className="text-[11px] text-stone-500">Chạm hoặc click trực tiếp lên bản đồ để đặt ghim vị trí nhà bạn</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowMapModal(false)}
+                className="w-8 h-8 rounded-full bg-stone-200/60 text-stone-600 hover:bg-stone-300 font-bold flex items-center justify-center text-sm transition cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Vùng chứa bản đồ Leaflet động */}
+            <div className="flex-1 relative z-0">
+              <MapComponent
+                lat={tempCoords.lat}
+                lng={tempCoords.lng}
+                onSelect={(lat, lng) => setTempCoords({ lat, lng })}
+              />
+            </div>
+
+            {/* Footer Modal bản đồ */}
+            <div className="p-3.5 border-t border-stone-100 bg-stone-50 flex items-center justify-between gap-3">
+              <span className="text-[11px] font-mono text-stone-600 truncate">
+                Tọa độ chọn: {tempCoords.lat.toFixed(5)}, {tempCoords.lng.toFixed(5)}
+              </span>
+              <button
+                type="button"
+                onClick={handleConfirmMapLocation}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-5 py-2.5 rounded-xl text-xs uppercase tracking-wider transition active:scale-98 cursor-pointer shrink-0"
+              >
+                Xác nhận vị trí này
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 📜 MODAL ĐIỀU KHOẢN SỬ DỤNG */}
       {showTermsModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200">
           <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl flex flex-col max-h-[85vh] overflow-hidden border border-stone-200">
-            {/* Header Modal */}
             <div className="p-4 border-b border-stone-100 bg-stone-50 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="text-lg">📜</span>
@@ -706,7 +786,6 @@ export default function ProfilePage() {
               </button>
             </div>
 
-            {/* Nội dung Modal */}
             <div className="p-4 overflow-y-auto space-y-4 text-xs text-stone-600 leading-relaxed">
               <p className="font-medium text-stone-700 italic">
                 Chào mừng bạn đến với Sàn thương mại điện tử <strong>Chợ Online</strong>. Bằng việc đăng ký tài khoản và mua hàng trên hệ thống, bạn cam kết đã đọc, hiểu và đồng ý tuân thủ toàn bộ các điều khoản dưới đây.
@@ -753,7 +832,6 @@ export default function ProfilePage() {
               </div>
             </div>
 
-            {/* Footer Modal */}
             <div className="p-3.5 border-t border-stone-100 bg-stone-50 flex justify-end">
               <button
                 type="button"

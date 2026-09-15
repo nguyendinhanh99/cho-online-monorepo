@@ -171,10 +171,8 @@ export default function HomePage() {
     const handleScroll = () => {
       const currentScrollY = window.scrollY;
       if (currentScrollY > lastScrollY.current && currentScrollY > 80) {
-        // Cuộn xuống -> Ẩn header
         setShowNavbar(false);
       } else {
-        // Cuộn lên -> Hiện header
         setShowNavbar(true);
       }
       lastScrollY.current = currentScrollY;
@@ -184,10 +182,8 @@ export default function HomePage() {
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
 
-  // State kiểm tra Client Mount chống lỗi Hydration
   const [isMounted, setIsMounted] = useState(false);
   const { addItem } = useCartStore();
-  // State thông tin người dùng / địa chỉ giao hàng
   const [userInfo, setUserInfo] = useState<UserLocation>({
     customerName: "Khách Hàng",
     customerPhone: "0987654321",
@@ -196,20 +192,16 @@ export default function HomePage() {
     lng: 105.8978,
   });
 
-  // FLASH SALE TABS & REMINDERS STATE
   const [flashTab, setFlashTab] = useState<"active" | "upcoming">("active");
   const [reminders, setReminders] = useState<Record<string, boolean>>({});
 
-  // 🔍 STATE TÌM KIẾM
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [isSearchFocused, setIsSearchFocused] = useState<boolean>(false);
   const [searchHistory, setSearchHistory] = useState<string[]>([]);
   const searchRef = useRef<HTMLDivElement>(null);
 
-  // 📍 TỌA ĐỘ ĐÃ GEOCODE CỦA CÁC QUÁN
   const [shopCoordinates, setShopCoordinates] = useState<Record<string, { lat: number; lng: number }>>({});
 
-  // 🔔 UI/UX CUSTOM NOTIFICATION STATE (Toast Messages)
   interface ToastMessage {
     id: string;
     type: "success" | "warning" | "info" | "error";
@@ -227,7 +219,7 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => {
-    setIsMounted(true); // Đánh dấu Client mount thành công
+    setIsMounted(true);
 
     if (typeof window !== "undefined") {
       const saved = localStorage.getItem("search_history_fnb");
@@ -291,11 +283,13 @@ export default function HomePage() {
     }
   };
 
-  // 🌟 TỰ ĐỘNG LẤY THÔNG TIN USER TỪ FIRESTORE
   useEffect(() => {
     async function fetchUserFromFirebase() {
       try {
-        const targetPhone = localStorage.getItem("user_phone") || "0987654321";
+        const targetPhone = localStorage.getItem("user_phone");
+        if (!targetPhone) {
+          return;
+        }
 
         const usersRef = collection(db, "users");
         const q = query(usersRef, where("phone", "==", targetPhone));
@@ -344,19 +338,15 @@ export default function HomePage() {
     }
   }, []);
 
-
-
   const [selectedShop, setSelectedShop] = useState<Shop | null>(null);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
 
-  // Zustand Cart Store
   const addItemToCart = useCartStore((state) => state.addItem);
   const openCart = useCartStore((state) => state.openCart);
   const getTotalItems = useCartStore((state) => state.getTotalItems);
 
   const totalCartCount = isMounted ? getTotalItems() : 0;
 
-  // 📏 HÀM TÍNH KHOẢNG CÁCH HAVERSINE (CỘNG THÊM 1 KM)
   const calculateHaversineDistance = useCallback(
     (lat1: number, lon1: number, lat2: number, lon2: number): { text: string; km: number } => {
       const R = 6371;
@@ -382,7 +372,6 @@ export default function HomePage() {
     []
   );
 
-  // 🗺️ HÀM TỰ ĐỘNG CHUYỂN CHUỖI ĐỊA CHỈ THÀNH TỌA ĐỘ LAT/LNG (GEOCODING)
   const geocodeAddress = useCallback(async (addressStr: string): Promise<{ lat: number; lng: number } | null> => {
     if (!addressStr || addressStr.trim().length < 3) return null;
     try {
@@ -517,7 +506,14 @@ export default function HomePage() {
         merchantsSnap.forEach((docSnap) => {
           const data = docSnap.data();
 
-          if (data.businessCategory !== "F&B" && data.category !== "F&B") {
+          const bCat = data.businessCategory;
+          // Chỉ lấy các merchant có businessCategory là F&B hoặc FNB
+          const isFnb =
+            bCat === "F&B" ||
+            bCat === "FNB" ||
+            (typeof bCat === "string" && (bCat.toLowerCase() === "f&b" || bCat.toLowerCase() === "fnb" || bCat.toLowerCase().includes("f&b") || bCat.toLowerCase().includes("fnb")));
+
+          if (!isFnb) {
             return;
           }
 
@@ -573,6 +569,9 @@ export default function HomePage() {
 
           const isAvailable = data.isAvailable !== undefined ? Boolean(data.isAvailable) : true;
           if (!isAvailable) return;
+
+          // ⭐ Chỉ nhận các sản phẩm có isConsumerGood = false
+          if (data.isConsumerGood !== false) return;
 
           const rawShopId = String(data.shopId || data.merchantId || "");
           const matchedShopKey = Object.keys(shopMap).find(
@@ -807,7 +806,6 @@ export default function HomePage() {
     });
   }, [products, shops, calculatedDistances, checkProductDiscount]);
 
-  // Thêm state lưu tổng số giây còn lại (1 tiếng = 3600 giây)
   const [timeLeft, setTimeLeft] = useState<number>(3600);
 
   useEffect(() => {
@@ -817,7 +815,6 @@ export default function HomePage() {
     return () => clearInterval(timer);
   }, []);
 
-  // Hàm chuyển đổi giây sang định dạng HH : MM : SS
   const formatTime = (seconds: number) => {
     const h = Math.floor(seconds / 3600);
     const m = Math.floor((seconds % 3600) / 60);
@@ -872,7 +869,6 @@ export default function HomePage() {
 
   return (
     <div className="bg-[#f4f5f7] min-h-screen pb-24 font-sans text-stone-800 relative">
-      {/* 🔔 MODERN FLOATING TOAST NOTIFICATION CONTAINER */}
       <div className="fixed top-20 right-4 z-50 flex flex-col gap-2.5 max-w-sm w-full pointer-events-none px-4 sm:px-0">
         {toasts.map((toast) => {
           let bgGradient = "bg-gradient-to-r from-stone-900 to-stone-800 border-stone-700 text-white";
@@ -912,8 +908,7 @@ export default function HomePage() {
         })}
       </div>
 
-      {/* HEADER TÌM KIẾM & ĐỊA CHỈ (Ẩn/Hiện mượt mà theo thao tác cuộn chuột) */}
-      <div 
+      <div
         className={`sticky top-0 z-40 bg-gradient-to-r from-[#ff4500] via-[#ee4d2d] to-[#ff6036] p-3 text-white shadow-md space-y-2.5 transition-transform duration-300 ${
           showNavbar ? "translate-y-0" : "-translate-y-full"
         }`}
@@ -950,7 +945,6 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* SEARCH BAR */}
         <div className="relative" ref={searchRef}>
           <div className="relative flex items-center">
             <input
@@ -1044,7 +1038,6 @@ export default function HomePage() {
         </div>
       </div>
 
-      {/* 🎟️ PHẦN VOUCHER & KHUYẾN MÃI TOÀN SÀN */}
       {!searchQuery && vouchers.length > 0 && (
         <div className="bg-gradient-to-b from-amber-500/10 via-orange-500/5 to-transparent py-2.5 border-b border-orange-200/40">
           <div className="px-3 flex items-center justify-between mb-2">
@@ -1056,7 +1049,6 @@ export default function HomePage() {
                 </h3>
               </div>
             </div>
-
           </div>
 
           <div className="flex gap-2 overflow-x-auto no-scrollbar px-3 py-0.5">
@@ -1071,14 +1063,16 @@ export default function HomePage() {
               return (
                 <div
                   key={v.id}
-                  className={`min-w-[210px] max-w-[210px] bg-white rounded-xl border shadow-2xs flex overflow-hidden relative transition-all duration-200 hover:shadow-sm ${isSaved ? "border-emerald-500/80 bg-emerald-50/10" : "border-amber-200/80"
-                    }`}
+                  className={`min-w-[210px] max-w-[210px] bg-white rounded-xl border shadow-2xs flex overflow-hidden relative transition-all duration-200 hover:shadow-sm ${
+                    isSaved ? "border-emerald-500/80 bg-emerald-50/10" : "border-amber-200/80"
+                  }`}
                 >
                   <div
-                    className={`w-14 shrink-0 flex flex-col items-center justify-center p-1.5 text-white text-center relative border-r border-dashed border-stone-200 ${isFreeship
-                      ? "bg-gradient-to-br from-emerald-500 to-teal-600"
-                      : "bg-gradient-to-br from-orange-500 to-[#ee4d2d]"
-                      }`}
+                    className={`w-14 shrink-0 flex flex-col items-center justify-center p-1.5 text-white text-center relative border-r border-dashed border-stone-200 ${
+                      isFreeship
+                        ? "bg-gradient-to-br from-emerald-500 to-teal-600"
+                        : "bg-gradient-to-br from-orange-500 to-[#ee4d2d]"
+                    }`}
                   >
                     <span className="text-lg mb-0.5">{isFreeship ? "🚚" : "💵"}</span>
                     <span className="text-[8px] font-black uppercase leading-tight">
@@ -1116,8 +1110,9 @@ export default function HomePage() {
                       </div>
                       <div className="w-full bg-stone-100 h-1 rounded-full overflow-hidden">
                         <div
-                          className={`h-full rounded-full transition-all duration-300 ${isFreeship ? "bg-teal-500" : "bg-[#ee4d2d]"
-                            }`}
+                          className={`h-full rounded-full transition-all duration-300 ${
+                            isFreeship ? "bg-teal-500" : "bg-[#ee4d2d]"
+                          }`}
                           style={{ width: `${usedPercent > 0 ? usedPercent : 10}%` }}
                         ></div>
                       </div>
@@ -1126,10 +1121,11 @@ export default function HomePage() {
                     <button
                       type="button"
                       onClick={() => handleSaveVoucher(v.code)}
-                      className={`w-full py-0.5 text-[9px] font-bold rounded-md transition active:scale-95 flex items-center justify-center cursor-pointer ${isSaved
-                        ? "bg-emerald-600 text-white"
-                        : "bg-orange-100 hover:bg-orange-200 text-[#ee4d2d]"
-                        }`}
+                      className={`w-full py-0.5 text-[9px] font-bold rounded-md transition active:scale-95 flex items-center justify-center cursor-pointer ${
+                        isSaved
+                          ? "bg-emerald-600 text-white"
+                          : "bg-orange-100 hover:bg-orange-200 text-[#ee4d2d]"
+                      }`}
                     >
                       <span>{isSaved ? "✓ Đã lưu" : "Lưu mã"}</span>
                     </button>
@@ -1141,7 +1137,6 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* SUGGESTION / RECOMMENDATION */}
       <div className="bg-white py-3 px-3 border-b border-stone-200/60 shadow-2xs space-y-2">
         <div className="flex items-center justify-between">
           <h3 className="text-xs font-black text-stone-800 tracking-tight flex items-center gap-1">
@@ -1175,18 +1170,20 @@ export default function HomePage() {
                     setSearchQuery("");
                   }
                 }}
-                className={`min-w-[130px] rounded-xl p-2.5 cursor-pointer transition-all duration-200 shrink-0 space-y-1 relative active:scale-95 border ${isActive
-                  ? "bg-gradient-to-br from-orange-500 to-[#ee4d2d] text-white border-[#ee4d2d] shadow-md -translate-y-0.5 ring-2 ring-orange-300/50"
-                  : "bg-gradient-to-br from-orange-50/60 to-amber-50/30 border-orange-200/60 text-stone-800 hover:border-[#ee4d2d] hover:bg-orange-50"
-                  }`}
+                className={`min-w-[130px] rounded-xl p-2.5 cursor-pointer transition-all duration-200 shrink-0 space-y-1 relative active:scale-95 border ${
+                  isActive
+                    ? "bg-gradient-to-br from-orange-500 to-[#ee4d2d] text-white border-[#ee4d2d] shadow-md -translate-y-0.5 ring-2 ring-orange-300/50"
+                    : "bg-gradient-to-br from-orange-50/60 to-amber-50/30 border-orange-200/60 text-stone-800 hover:border-[#ee4d2d] hover:bg-orange-50"
+                }`}
               >
                 <div className="flex items-center justify-between">
                   <span className="text-2xl">{item.emoji}</span>
                   <span
-                    className={`text-[9px] font-black px-1.5 py-0.5 rounded-md transition ${isActive
-                      ? "bg-white text-[#ee4d2d] shadow-xs"
-                      : "bg-orange-200/60 text-orange-900"
-                      }`}
+                    className={`text-[9px] font-black px-1.5 py-0.5 rounded-md transition ${
+                      isActive
+                        ? "bg-white text-[#ee4d2d] shadow-xs"
+                        : "bg-orange-200/60 text-orange-900"
+                    }`}
                   >
                     {isActive ? "✓ Đang chọn" : "Gợi ý"}
                   </span>
@@ -1206,7 +1203,6 @@ export default function HomePage() {
         </div>
       </div>
 
-      {/* QUICK FILTERS */}
       <div className="px-2 py-2 flex items-center gap-1.5 overflow-x-auto no-scrollbar bg-stone-100/85 sticky top-[0px] z-30 backdrop-blur-md">
         {[
           { id: "recommend", label: "🎯 Gợi ý cho bạn (AI)" },
@@ -1217,10 +1213,11 @@ export default function HomePage() {
           <button
             key={f.id}
             onClick={() => setQuickFilter(f.id)}
-            className={`px-3 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap border transition cursor-pointer shrink-0 ${quickFilter === f.id
-              ? "bg-[#ee4d2d] text-white border-[#ee4d2d] shadow-2xs"
-              : "bg-white text-stone-600 border-stone-200 hover:bg-stone-50"
-              }`}
+            className={`px-3 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap border transition cursor-pointer shrink-0 ${
+              quickFilter === f.id
+                ? "bg-[#ee4d2d] text-white border-[#ee4d2d] shadow-2xs"
+                : "bg-white text-stone-600 border-stone-200 hover:bg-stone-50"
+            }`}
           >
             {f.label}
           </button>
@@ -1241,7 +1238,6 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* FLASH DEAL */}
       {!searchQuery && (activeDeals.length > 0 || upcomingDeals.length > 0) && (
         <div className="bg-white my-2 py-3.5 border-y border-stone-200/70 shadow-2xs">
           <div className="px-3 space-y-2.5">
@@ -1273,10 +1269,11 @@ export default function HomePage() {
             <div className="flex items-center gap-2 border-b border-stone-100 pb-2">
               <button
                 onClick={() => setFlashTab("active")}
-                className={`text-xs font-bold px-3 py-1 rounded-full transition cursor-pointer flex items-center gap-1.5 ${flashTab === "active"
-                  ? "bg-rose-50 text-[#ee4d2d] border border-rose-200 shadow-2xs"
-                  : "text-stone-500 hover:bg-stone-100"
-                  }`}
+                className={`text-xs font-bold px-3 py-1 rounded-full transition cursor-pointer flex items-center gap-1.5 ${
+                  flashTab === "active"
+                    ? "bg-rose-50 text-[#ee4d2d] border border-rose-200 shadow-2xs"
+                    : "text-stone-500 hover:bg-stone-100"
+                }`}
               >
                 <span>🔥 Đang ưu đãi</span>
                 <span className="bg-[#ee4d2d] text-white text-[9px] px-1.5 py-0.2 rounded-full font-extrabold">
@@ -1287,10 +1284,11 @@ export default function HomePage() {
               {upcomingDeals.length > 0 && (
                 <button
                   onClick={() => setFlashTab("upcoming")}
-                  className={`text-xs font-bold px-3 py-1 rounded-full transition cursor-pointer flex items-center gap-1.5 ${flashTab === "upcoming"
-                    ? "bg-amber-50 text-amber-700 border border-amber-200 shadow-2xs"
-                    : "text-stone-500 hover:bg-stone-100"
-                    }`}
+                  className={`text-xs font-bold px-3 py-1 rounded-full transition cursor-pointer flex items-center gap-1.5 ${
+                    flashTab === "upcoming"
+                      ? "bg-amber-50 text-amber-700 border border-amber-200 shadow-2xs"
+                      : "text-stone-500 hover:bg-stone-100"
+                  }`}
                 >
                   <span>⏰ Sắp mở bán</span>
                   <span className="bg-amber-500 text-white text-[9px] px-1.5 py-0.2 rounded-full font-extrabold">
@@ -1310,24 +1308,26 @@ export default function HomePage() {
 
               const startTimeFormatted = item.discountStartTime
                 ? new Date(item.discountStartTime).toLocaleTimeString("vi-VN", {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })
                 : "Sắp tới";
 
               return (
                 <div
                   key={item.id}
                   onClick={() => setSelectedProduct(item)}
-                  className={`min-w-[145px] max-w-[145px] bg-white border border-stone-200/90 rounded-2xl p-2 relative flex flex-col justify-between shadow-2xs cursor-pointer hover:border-[#ee4d2d] hover:shadow-md transition-all duration-200 group ${!isShopOpen ? "opacity-60" : ""
-                    }`}
+                  className={`min-w-[145px] max-w-[145px] bg-white border border-stone-200/95 rounded-2xl p-2 relative flex flex-col justify-between shadow-2xs cursor-pointer hover:border-[#ee4d2d] hover:shadow-md transition-all duration-200 group ${
+                    !isShopOpen ? "opacity-60" : ""
+                  }`}
                 >
                   {discountPercent > 0 && (
                     <div
-                      className={`absolute top-0 right-0 text-white text-[10px] font-black px-2 py-0.5 rounded-bl-xl rounded-tr-2xl z-10 shadow-xs flex flex-col items-center leading-none ${discountPercent >= 30
-                        ? "bg-gradient-to-b from-purple-600 via-red-600 to-[#ee4d2d] animate-pulse"
-                        : "bg-gradient-to-b from-red-500 to-[#ee4d2d]"
-                        }`}
+                      className={`absolute top-0 right-0 text-white text-[10px] font-black px-2 py-0.5 rounded-bl-xl rounded-tr-2xl z-10 shadow-xs flex flex-col items-center leading-none ${
+                        discountPercent >= 30
+                          ? "bg-gradient-to-b from-purple-600 via-red-600 to-[#ee4d2d] animate-pulse"
+                          : "bg-gradient-to-b from-red-500 to-[#ee4d2d]"
+                      }`}
                     >
                       <span>-{discountPercent}%</span>
                       <span className="text-[7px] font-medium uppercase text-amber-200">
@@ -1337,7 +1337,6 @@ export default function HomePage() {
                   )}
 
                   <div className="space-y-1.5">
-                    {/* Khung ảnh flash deal */}
                     <div className="h-24 bg-stone-100 rounded-xl overflow-hidden relative group-hover:scale-[1.02] transition duration-200">
                       <img
                         src={item.imageUrl}
@@ -1438,10 +1437,11 @@ export default function HomePage() {
                         <button
                           type="button"
                           onClick={(e) => toggleReminder(item.id, e)}
-                          className={`w-full text-[10px] font-bold py-1 rounded-lg transition active:scale-95 flex items-center justify-center gap-1 border cursor-pointer ${reminders[item.id]
-                            ? "bg-amber-500 text-white border-amber-500"
-                            : "bg-white text-amber-600 border-amber-400 hover:bg-amber-50"
-                            }`}
+                          className={`w-full text-[10px] font-bold py-1 rounded-lg transition active:scale-95 flex items-center justify-center gap-1 border cursor-pointer ${
+                            reminders[item.id]
+                              ? "bg-amber-500 text-white border-amber-500"
+                              : "bg-white text-amber-600 border-amber-400 hover:bg-amber-50"
+                          }`}
                         >
                           <span>{reminders[item.id] ? "✓ Đã đặt" : "🔔 Nhắc tôi"}</span>
                         </button>
@@ -1455,15 +1455,15 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* CATEGORY COMPREHENSIVE TABS */}
       <div className="bg-white border-b border-stone-200/80 shadow-2xs mt-1 py-2">
         <div className="flex gap-2 overflow-x-auto no-scrollbar px-3 whitespace-nowrap">
           <button
             onClick={() => setActiveTab("all")}
-            className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition shrink-0 cursor-pointer ${activeTab === "all"
-              ? "bg-stone-900 text-white border-stone-900 shadow-xs"
-              : "bg-stone-50 text-stone-600 border-stone-200 hover:bg-stone-100"
-              }`}
+            className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition shrink-0 cursor-pointer ${
+              activeTab === "all"
+                ? "bg-stone-900 text-white border-stone-900 shadow-xs"
+                : "bg-stone-50 text-stone-600 border-stone-200 hover:bg-stone-100"
+            }`}
           >
             🌈 Tất cả ({products.length})
           </button>
@@ -1472,10 +1472,11 @@ export default function HomePage() {
             <button
               key={cat}
               onClick={() => setActiveTab(cat)}
-              className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition shrink-0 cursor-pointer ${activeTab === cat
-                ? "bg-orange-500 text-white border-orange-500 shadow-xs"
-                : "bg-white text-stone-600 border-stone-200 hover:bg-stone-50"
-                }`}
+              className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition shrink-0 cursor-pointer ${
+                activeTab === cat
+                  ? "bg-orange-500 text-white border-orange-500 shadow-xs"
+                  : "bg-white text-stone-600 border-stone-200 hover:bg-stone-50"
+              }`}
             >
               {cat}
             </button>
@@ -1483,7 +1484,6 @@ export default function HomePage() {
         </div>
       </div>
 
-      {/* DANH SÁCH TẤT CẢ SẢN PHẨM */}
       {loading ? (
         <div className="p-2 grid grid-cols-2 gap-2">
           {[1, 2, 3, 4].map((n) => (
@@ -1521,8 +1521,9 @@ export default function HomePage() {
             return (
               <div
                 key={product.id}
-                className={`bg-white rounded-xl overflow-hidden border border-stone-200/70 shadow-2xs hover:shadow-md transition flex flex-col justify-between group ${!isShopOpen ? "opacity-75" : ""
-                  }`}
+                className={`bg-white rounded-xl overflow-hidden border border-stone-200/70 shadow-2xs hover:shadow-md transition flex flex-col justify-between group ${
+                  !isShopOpen ? "opacity-75" : ""
+                }`}
               >
                 <div>
                   {shop && (
@@ -1646,10 +1647,11 @@ export default function HomePage() {
                         e.stopPropagation();
                         handleAddToCart(product);
                       }}
-                      className={`${isShopOpen
-                        ? "bg-[#ee4d2d] hover:bg-[#d73f20] cursor-pointer"
-                        : "bg-stone-300 text-stone-500 cursor-not-allowed"
-                        } active:scale-95 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg transition shadow-2xs flex items-center gap-0.5 shrink-0 ml-1`}
+                      className={`${
+                        isShopOpen
+                          ? "bg-[#ee4d2d] hover:bg-[#d73f20] cursor-pointer"
+                          : "bg-stone-300 text-stone-500 cursor-not-allowed"
+                      } active:scale-95 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg transition shadow-2xs flex items-center gap-0.5 shrink-0 ml-1`}
                     >
                       <span>{isShopOpen ? "+ Thêm" : "Tạm đóng"}</span>
                     </button>

@@ -101,7 +101,7 @@ const HOT_KEYWORDS = [
   "Nước rửa chén",
 ];
 
-// 🎯 HẠNG MỤC SẢN PHẨM PHÙ HỢP CONSUMER_GOODS & ELECTRONICS
+// 🎯 HẠNG MỤC SẢN PHẨM PHÙ HỢP CONSUMER_GOODS & FASHION
 const CATEGORY_SUGGESTIONS: Record<string, string[]> = {
   "📱 Điện thoại & Phụ kiện": ["Điện thoại", "Sạc dự phòng", "Cáp sạc", "Tai nghe", "Ốp lưng", "Củ sạc", "Giá đỡ"],
   "🔌 Thiết bị điện & Chiếu sáng": ["Bóng đèn", "Ổ cắm", "Phích cắm", "Dây điện", "Công tắc", "Đèn học", "Đèn pin"],
@@ -110,8 +110,7 @@ const CATEGORY_SUGGESTIONS: Record<string, string[]> = {
   "🧂 Gia vị & Bếp núc": ["Dầu ăn", "Nước mắm", "Hạt nêm", "Đường", "Tương ớt", "Nước tương", "Muối", "Bột ngọt"],
   "🧻 Giấy & Tã bỉm": ["Giấy ăn", "Giấy vệ sinh", "Khăn ướt", "Tã bỉm em bé", "Băng vệ sinh"],
   "🧴 Chăm sóc cá nhân": ["Dầu gội", "Sữa tắm", "Kem đánh răng", "Bàn chải", "Sữa rửa mặt", "Xà phòng"],
-  "🍽️ Tiện ích nhà bếp": ["Túi rác", "Màng bọc thực phẩm", "Mút rửa chén", "Giấy bạc", "Hộp thực phẩm", "Khăn lau"],
-  "🍜 Thực phẩm khô & Đồ đóng gói": ["Mì ăn liền", "Phở khô", "Gạo", "Cà phê gói", "Sữa tươi", "Bánh quy"],
+  "👗 Thời trang & Quần áo": ["Áo thun", "Quần Jean", "Áo khoác", "Váy", "Phụ kiện", "Túi xách", "Giày dép"],
 };
 
 // 🚫 DANH SÁCH TỪ KHÓA BỊ CẤM
@@ -121,7 +120,17 @@ const EXCLUDED_KEYWORDS = [
   "bún đậu", "cơm tấm", "phở bò", "bánh mì tươi", "lẩu", "nướng quán"
 ];
 
-const ALLOWED_BUSINESS_CATEGORIES = ["CONSUMER_GOODS", "ELECTRONICS", "GROCERY", "FMCG"];
+// 🎯 CẬP NHẬT: Chỉ cho phép CONSUMER_GOODS và FASHION
+const ALLOWED_BUSINESS_CATEGORIES = [
+  "CONSUMER_GOODS", 
+  "FASHION", 
+  "ELECTRONICS", 
+  "GROCERY", 
+  "FMCG", 
+  "THIẾT BỊ ĐIỆN", 
+  "ĐIỆN TỬ", 
+  "THỜI TRANG"
+];
 
 const formatSoldCount = (count: number = 0): string => {
   if (count >= 1000) {
@@ -141,7 +150,6 @@ export default function CategoriesPage() {
 
   // 🔄 Trạng thái ẩn/hiện phần banner & header khi cuộn trang
   const [showBannerOnScroll, setShowBannerOnScroll] = useState<boolean>(true);
-  const [isBannerOpen, setIsBannerOpen] = useState<boolean>(true);
   const [lastScrollY, setLastScrollY] = useState<number>(0);
 
   const [flashTab, setFlashTab] = useState<"active" | "upcoming">("active");
@@ -151,17 +159,15 @@ export default function CategoriesPage() {
   const [searchHistory, setSearchHistory] = useState<string[]>([]);
   const searchRef = useRef<HTMLDivElement>(null);
 
-  // 📜 Xử lý sự kiện cuộn trang (Cuộn xuống -> ẩn gọn header, Cuộn lên -> hiển thị lại)
+  // 📜 Xử lý sự kiện cuộn trang
   useEffect(() => {
     const handleScroll = () => {
       const currentScrollY = window.scrollY;
       if (currentScrollY <= 10) {
         setShowBannerOnScroll(true);
       } else if (currentScrollY > lastScrollY && currentScrollY > 60) {
-        // Cuộn xuống -> ẩn
         setShowBannerOnScroll(false);
       } else if (currentScrollY < lastScrollY) {
-        // Cuộn lên -> hiển thị
         setShowBannerOnScroll(true);
       }
       setLastScrollY(currentScrollY);
@@ -374,7 +380,7 @@ export default function CategoriesPage() {
           shopMap[docSnap.id] = {
             id: docSnap.id,
             merchantCode: data.merchantCode || "",
-            name: data.shopName || data.storeName || data.fullName || "Bách Hóa & Điện Tử",
+            name: data.shopName || data.storeName || data.fullName || "Cửa Hàng",
             avatar: rawAvatar.trim() !== "" ? rawAvatar : "https://images.unsplash.com/photo-1578916171728-46686eac8d58?w=100",
             rating: calculatedRating,
             reviewCount: calculatedReviewCount,
@@ -393,8 +399,12 @@ export default function CategoriesPage() {
 
         productsSnap.forEach((docSnap) => {
           const data = docSnap.data();
+          
           const isAvailable = data.isAvailable !== undefined ? Boolean(data.isAvailable) : true;
           if (!isAvailable) return;
+
+          // Điều kiện nhận sản phẩm có isConsumerGood === true
+          if (data.isConsumerGood !== true) return;
 
           const rawShopId = String(data.shopId || data.merchantId || "");
           const matchedShopKey = Object.keys(shopMap).find(
@@ -422,7 +432,7 @@ export default function CategoriesPage() {
             merchantId: data.merchantId || matchedShopKey,
             merchantCode: data.merchantCode || matchedShop.merchantCode || "",
             shopName: matchedShop.name,
-            name: data.name || "Sản phẩm tiêu dùng / điện tử",
+            name: data.name || "Sản phẩm",
             description: data.description || "",
             price: price,
             originalPrice: originalPrice > price ? originalPrice : price,
@@ -436,7 +446,7 @@ export default function CategoriesPage() {
             reviewCount: Number(data.reviewCount || 0),
             discountBadge: data.discountBadge || "",
             stockProgress: data.stockProgress || 80,
-            category: data.category || "Bách Hóa & Điện Tử",
+            category: data.category || "Danh mục",
             isFavorite: data.isFeatured || data.isFavorite || false,
             isAvailable: isAvailable,
             reviews: data.reviews || [],
@@ -474,7 +484,7 @@ export default function CategoriesPage() {
           setVouchers(fetchedVouchers);
         }
       } catch (error) {
-        console.error(error);
+        console.error("Lỗi khi fetch dữ liệu:", error);
       } finally {
         if (isMounted) setLoading(false);
       }
@@ -607,15 +617,13 @@ export default function CategoriesPage() {
 
   return (
     <div className="bg-[#f0f4f8] min-h-screen pb-24 font-sans text-slate-800">
-      {/* 🔴 VÙNG HEADER & BANNER CỐ ĐỊNH (Cuộn xuống tự động ẩn gọn, cuộn lên hiện lại) */}
+      {/* 🔴 VÙNG HEADER & BANNER CỐ ĐỊNH */}
       <div
         className={`sticky top-0 z-40 transition-all duration-300 shadow-md ${
           showBannerOnScroll ? "translate-y-0 opacity-100" : "-translate-y-full opacity-0"
         }`}
       >
-        {/* Banner thông báo trên cùng */}
-
-        {/* 💙 HEADER BÁCH HÓA & ĐIỆN TỬ (Bao gồm địa chỉ & ô tìm kiếm trong ảnh) */}
+        {/* 💙 HEADER */}
         <div className="bg-gradient-to-r from-blue-700 via-blue-600 to-cyan-600 p-3 text-white space-y-2.5">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-1.5 overflow-hidden flex-1 bg-white/15 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/20">
@@ -659,7 +667,7 @@ export default function CategoriesPage() {
                     setIsSearchFocused(false);
                   }
                 }}
-                placeholder="Tìm nước giặt, tai nghe, sạc dự phòng, nồi cơm, pin..."
+                placeholder="Tìm đồ gia dụng, điện tử, thời trang, quần áo..."
                 className="w-full bg-white text-slate-800 text-xs py-2.5 pl-9 pr-20 rounded-xl outline-none placeholder:text-slate-400 shadow-inner font-medium"
               />
               <span className="absolute left-3 text-slate-400 text-xs">🔍</span>
@@ -904,14 +912,14 @@ export default function CategoriesPage() {
           <div className="space-y-1">
             <div className="flex items-center gap-1 text-[9px] font-bold text-emerald-800 uppercase tracking-wider">
               <span>🧺</span>
-              <span>Bách Hóa & Tiêu Dùng</span>
+              <span>Bách Hóa & Thời Trang</span>
             </div>
 
             <div className="flex gap-1.5 overflow-x-auto no-scrollbar py-0.5">
               {[
                 { id: "smart_laundry", label: "Giặt Xả Giá Sốc", emoji: "🧺", desc: "Nước giặt, Xả vải", category: "🧺 Giặt xả & Vệ sinh", filter: "discount" },
                 { id: "smart_spices", label: "Gia Vị Nhà Bếp", emoji: "🧂", desc: "Dầu ăn, Nước mắm", category: "🧂 Gia vị & Bếp núc", filter: "bestseller" },
-                { id: "smart_tissue", label: "Giấy & Bỉm Tã", emoji: "🧻", desc: "Mua lốc tiết kiệm 30%", category: "🧻 Giấy & Tã bỉm", filter: "bestseller" },
+                { id: "smart_fashion", label: "Thời Trang & Quần Áo", emoji: "👗", desc: "Áo thun, Quần, Váy", category: "👗 Thời trang & Quần áo", filter: "recommend" },
               ].map((item) => {
                 const isActive = activeTab === item.category && searchQuery === "";
 
@@ -941,7 +949,7 @@ export default function CategoriesPage() {
                           isActive ? "bg-white text-emerald-800" : "bg-emerald-100 text-emerald-800"
                         }`}
                       >
-                        {isActive ? "✓ Chọn" : "Bách Hóa"}
+                        {isActive ? "✓ Chọn" : "Mua Sắm"}
                       </span>
                     </div>
                     <div>
@@ -1137,7 +1145,7 @@ export default function CategoriesPage() {
         <div className="p-8 text-center space-y-2">
           <span className="text-4xl">🛒</span>
           <p className="text-xs font-bold text-slate-600">
-            Không tìm thấy sản phẩm tiêu dùng hoặc điện tử phù hợp.
+            Không tìm thấy sản phẩm tiêu dùng hoặc thời trang phù hợp.
           </p>
           <button
             onClick={() => {
