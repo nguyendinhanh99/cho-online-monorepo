@@ -17,6 +17,11 @@ interface OrderItem {
   storeAddress: string;
   storeLat?: number;
   storeLng?: number;
+  customerLat?: number;
+  customerLng?: number;
+  distanceKm?: number;
+  distanceStr?: string;
+  customerLocation?: { latitude?: number; longitude?: number };
   storePhone?: string;
   customerName?: string;
   customerPhone?: string;
@@ -140,8 +145,18 @@ export default function OrdersTab() {
               data.shopAddress ||
               data.merchantAddress ||
               "Đang cập nhật địa chỉ quán",
-            storeLat: data.storeLat || data.lat,
-            storeLng: data.storeLng || data.lng,
+            storeLat: Number(data.storeLat ?? data.storeLocation?.latitude ?? 0) || undefined,
+            storeLng: Number(data.storeLng ?? data.storeLocation?.longitude ?? 0) || undefined,
+            customerLat: Number(data.customerLat ?? data.location?.latitude ?? data.lat ?? 0) || undefined,
+            customerLng: Number(data.customerLng ?? data.location?.longitude ?? data.lng ?? 0) || undefined,
+            customerLocation: data.location
+              ? {
+                  latitude: Number(data.location.latitude) || undefined,
+                  longitude: Number(data.location.longitude) || undefined,
+                }
+              : undefined,
+            distanceKm: Number(data.distanceKm) || undefined,
+            distanceStr: data.distanceStr || undefined,
             storePhone: resolvedStorePhone,
             customerName:
               data.customerName || data.recipientName || "Khách hàng",
@@ -174,6 +189,36 @@ export default function OrdersTab() {
           };
           return getTime(b.createdAt) - getTime(a.createdAt);
         });
+
+        console.groupCollapsed(`📦 [ORDERS] Firestore realtime: ${fetchedOrders.length} đơn`);
+        console.table(
+          fetchedOrders.map((o) => ({
+            id: o.id,
+            status: o.status,
+            shipperId: o.shipperId || "",
+            store: o.storeName,
+            customer: o.customerName || "",
+            storeLat: o.storeLat ?? "",
+            storeLng: o.storeLng ?? "",
+            customerLat: o.customerLat ?? "",
+            customerLng: o.customerLng ?? "",
+            distanceKm: o.distanceKm ?? "",
+            shippingFee: o.shippingFee,
+            totalAmount: o.totalAmount ?? 0,
+            totalPrice: Number(o.rawData?.totalPrice ?? o.amountToCollect ?? 0),
+          }))
+        );
+        console.log("📦 Orders mapped:", fetchedOrders);
+        fetchedOrders.forEach((order) => {
+          console.groupCollapsed(`🧾 Order ${order.id}`);
+          console.log("Raw Firestore:", order.rawData);
+          console.log("Shop:", { address: order.storeAddress, lat: order.storeLat, lng: order.storeLng });
+          console.log("Customer:", { address: order.customerAddress, lat: order.customerLat, lng: order.customerLng, location: order.customerLocation });
+          console.log("Route:", { distanceKm: order.distanceKm, distanceStr: order.distanceStr, shippingFee: order.shippingFee });
+          console.log("Items:", order.items);
+          console.groupEnd();
+        });
+        console.groupEnd();
 
         setOrders(fetchedOrders);
         setLoading(false);
@@ -287,6 +332,7 @@ export default function OrdersTab() {
       }
 
       if (autoOpenMapsAddress) {
+        console.log("🗺️ Opening Google Maps:", { address: autoOpenMapsAddress, lat, lng });
         openGoogleMaps(autoOpenMapsAddress, lat, lng);
       }
 
@@ -519,7 +565,20 @@ export default function OrdersTab() {
                       )}
 
                       <button
-                        onClick={() => openGoogleMaps(order.customerAddress)}
+                        onClick={() => {
+                          console.log("🗺️ CUSTOMER MAP CLICK", {
+                            orderId: order.id,
+                            address: order.customerAddress,
+                            customerLat: order.customerLat,
+                            customerLng: order.customerLng,
+                            location: order.customerLocation,
+                          });
+                          openGoogleMaps(
+                            order.customerAddress,
+                            order.customerLat,
+                            order.customerLng
+                          );
+                        }}
                         className="bg-emerald-50 hover:bg-emerald-100 text-emerald-600 font-bold px-2 py-1 rounded-lg text-[10px] flex items-center gap-1 transition border border-emerald-100 cursor-pointer"
                       >
                         🗺️ Maps
@@ -689,7 +748,9 @@ export default function OrdersTab() {
                           order.id,
                           "delivering",
                           undefined,
-                          order.customerAddress
+                          order.customerAddress,
+                          order.customerLat,
+                          order.customerLng
                         )
                       }
                       className="bg-amber-500 hover:bg-amber-600 active:scale-95 text-white font-extrabold px-3 py-2 rounded-xl text-[11px] transition shadow-xs cursor-pointer flex items-center gap-1"
