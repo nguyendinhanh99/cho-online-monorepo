@@ -1,0 +1,16 @@
+{
+  "name": "Quản Lý Cửa Hàng",
+  "short_name": "Merchant",
+  "description": "Ứng dụng nhận thông báo đơn hàng",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ee4d2d",
+  "icons": [
+    {
+      "src": "/file.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    }
+  ]
+}
