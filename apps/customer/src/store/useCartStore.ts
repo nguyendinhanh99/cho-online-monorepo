@@ -49,10 +49,18 @@ export interface CartProduct
  * CART ITEM
  * ============================================================
  *
- * Một sản phẩm có thể có:
+ * Một sản phẩm có thể có nhiều line:
  *
- * lineId = merchant:product:discount
- * lineId = merchant:product:regular
+ * merchant:product:discount
+ * merchant:product:regular
+ *
+ * Ví dụ:
+ *
+ * MS001:P001:discount
+ * MS001:P001:regular
+ *
+ * Vì vậy mọi thao tác xóa / tăng / giảm
+ * phải dùng lineId thay vì productId.
  */
 export interface CartItem {
   lineId: string;
@@ -62,14 +70,13 @@ export interface CartItem {
   quantity: number;
 
   /**
-   * Giá thực tế của từng dòng.
-   *
-   * Ví dụ:
-   * 1 x 28.000
-   * 2 x 35.000
+   * Giá thực tế của dòng.
    */
   unitPrice: number;
 
+  /**
+   * Dòng này có phải giá khuyến mãi không?
+   */
   isDiscounted: boolean;
 }
 
@@ -105,12 +112,18 @@ interface CartState {
     quantity?: number
   ) => void;
 
+  /**
+   * Xóa chính xác một dòng cart.
+   */
   removeItem: (
-    productId: string
+    lineId: string
   ) => void;
 
+  /**
+   * Tăng / giảm chính xác một dòng cart.
+   */
   updateQuantity: (
-    productId: string,
+    lineId: string,
     delta: number
   ) => void;
 
@@ -136,7 +149,7 @@ interface CartState {
 
 /**
  * ============================================================
- * FIRESTORE LISTENER
+ * FIREBASE LISTENER
  * ============================================================
  */
 let unsubscribeCartListener:
@@ -145,20 +158,57 @@ let unsubscribeCartListener:
 
 /**
  * ============================================================
+ * FIREBASE HYDRATION
+ * ============================================================
+ *
+ * Chỉ merge Local + Firebase ở snapshot đầu tiên.
+ *
+ * Sau đó Firebase là source of truth.
+ *
+ * Tránh lỗi:
+ *
+ * User xóa món
+ * ↓
+ * Local = không còn món
+ * ↓
+ * Firebase snapshot cũ về
+ * ↓
+ * merge local + remote
+ * ↓
+ * món bị hồi sinh.
+ */
+let isInitialCartSnapshot = false;
+
+/**
+ * ============================================================
  * HELPERS
  * ============================================================
  */
 
 /**
+ * Lấy merchant ID thống nhất.
+ */
+const getProductMerchantId = (
+  product: CartProduct
+): string => {
+  return (
+    product.merchantId ||
+    product.shopId ||
+    ""
+  );
+};
+
+/**
  * Tạo lineId chuẩn.
+ *
+ * Không dùng productId đơn thuần.
  */
 const createLineId = (
   product: CartProduct,
   isDiscounted: boolean
 ): string => {
   const merchantId =
-    product.merchantId ||
-    product.shopId ||
+    getProductMerchantId(product) ||
     "unknown";
 
   const productId =
@@ -248,8 +298,6 @@ const sanitizeCartProduct = (
  * ============================================================
  * PROMOTION SCHEDULE
  * ============================================================
- *
- * Có start/end hay không?
  */
 const hasPromotionSchedule = (
   product: CartProduct
@@ -264,8 +312,6 @@ const hasPromotionSchedule = (
  * ============================================================
  * DISCOUNT TIME
  * ============================================================
- *
- * Chỉ dùng khi product có start/end.
  */
 const isDiscountTimeActive = (
   product: CartProduct
@@ -322,17 +368,11 @@ const isDiscountTimeActive = (
 const getPrices = (
   product: CartProduct
 ) => {
-  /**
-   * Giá gốc.
-   */
   const originalPrice =
     Number(product.originalPrice) ||
     Number(product.price) ||
     0;
 
-  /**
-   * Giá hiện tại.
-   */
   const currentPrice =
     Number(product.price) ||
     originalPrice;
@@ -347,17 +387,6 @@ const getPrices = (
  * ============================================================
  * PROMOTION STATE
  * ============================================================
- *
- * Quy tắc:
- *
- * 1. originalPrice > price
- *    => sản phẩm có giá giảm.
- *
- * 2. Không có start/end
- *    => giá giảm luôn có hiệu lực.
- *
- * 3. Có start/end
- *    => chỉ giảm trong khoảng thời gian.
  */
 const getPromotionState = (
   product: CartProduct
@@ -378,15 +407,6 @@ const getPromotionState = (
     hasSchedule &&
     isDiscountTimeActive(product);
 
-  /**
-   * Không có schedule:
-   *
-   * price < originalPrice
-   * => luôn dùng giá giảm.
-   *
-   * Có schedule:
-   * => phải đúng thời gian.
-   */
   const discountEnabled =
     hasRealDiscount &&
     (
@@ -412,15 +432,6 @@ const getPromotionState = (
  * ============================================================
  * DISCOUNT LIMIT
  * ============================================================
- *
- * Nếu:
- * maxPerUser = 1
- * discountStock = 7
- *
- * => giới hạn = 1
- *
- * Nếu discountStock âm / 0:
- * coi như không áp dụng giới hạn từ field này.
  */
 const getDiscountLimit = (
   product: CartProduct
@@ -594,18 +605,6 @@ const getDiscountInfo = (
  * ============================================================
  * SANITIZE CART ITEMS
  * ============================================================
- *
- * Đây là phần rất quan trọng.
- *
- * Nó xử lý:
- *
- * - cart cũ
- * - giá cũ
- * - unitPrice cũ
- * - lineId cũ
- * - KM hết hạn
- * - sản phẩm có price < originalPrice nhưng không có schedule
- * - quantity KM vượt giới hạn
  */
 const sanitizeCartItems = (
   items: CartItem[] | unknown
@@ -631,9 +630,6 @@ const sanitizeCartItems = (
           rawItem.product as CartProduct
         );
 
-      const promotion =
-        getPromotionState(product);
-
       const quantity = Math.max(
         1,
         Number(rawItem.quantity) || 1
@@ -642,93 +638,64 @@ const sanitizeCartItems = (
       const discountLimit =
         getDiscountLimit(product);
 
-      /**
-       * Kiểm tra item cũ có phải dòng KM không.
-       */
       const storedIsDiscounted =
         typeof rawItem.isDiscounted ===
         "boolean"
           ? rawItem.isDiscounted
           : undefined;
 
-      /**
-       * ======================================================
-       * XÁC ĐỊNH TRẠNG THÁI MỚI
-       * ======================================================
-       */
       let finalIsDiscounted = false;
 
       /**
-       * Trường hợp product có giá giảm hợp lệ.
+       * Có giá giảm hợp lệ.
        */
       if (
-        promotion.discountEnabled
+        getPromotionState(product)
+          .discountEnabled
       ) {
         /**
          * Không có schedule:
          *
-         * price < originalPrice
-         * => mọi cart line của sản phẩm
-         * đều phải dùng currentPrice.
-         *
-         * Điều này xử lý Cafe muối:
-         *
-         * 90.000 -> 81.000
+         * Giá sale luôn có hiệu lực.
          */
         if (
-          !promotion.hasSchedule
+          !hasPromotionSchedule(
+            product
+          )
         ) {
           finalIsDiscounted =
             true;
-        }
-
-        /**
-         * Có schedule:
-         *
-         * giữ đúng vai trò line cũ.
-         */
-        else {
+        } else {
+          /**
+           * Có schedule:
+           * giữ trạng thái line.
+           */
           finalIsDiscounted =
             storedIsDiscounted ??
             true;
         }
-      }
-
-      /**
-       * Nếu KM không còn hiệu lực:
-       * chuyển về giá gốc.
-       */
-      else {
+      } else {
+        /**
+         * KM hết hạn / không hợp lệ.
+         */
         finalIsDiscounted =
           false;
       }
 
+      const promotion =
+        getPromotionState(product);
+
       /**
-       * Giá thực tế.
-       *
-       * KHÔNG lấy unitPrice cũ.
-       *
-       * Vì unitPrice cũ có thể là:
-       *
-       * 90.000
-       *
-       * trong khi product hiện tại:
-       *
-       * 81.000.
+       * Luôn tính lại giá.
        */
       const finalUnitPrice =
         finalIsDiscounted
           ? promotion.currentPrice
           : promotion.originalPrice;
 
-      const merchantId =
-        product.merchantId ||
-        product.shopId ||
-        "unknown";
-
       /**
        * ======================================================
-       * TÁCH DÒNG KHI VƯỢT GIỚI HẠN KM
+       * TÁCH SALE / REGULAR KHI VƯỢT LIMIT
        * ======================================================
        */
       if (
@@ -737,18 +704,12 @@ const sanitizeCartItems = (
           Number.MAX_SAFE_INTEGER &&
         quantity > discountLimit
       ) {
-        /**
-         * Phần được KM.
-         */
         const discountedQuantity =
           Math.min(
             quantity,
             discountLimit
           );
 
-        /**
-         * Phần giá thường.
-         */
         const regularQuantity =
           Math.max(
             0,
@@ -826,7 +787,7 @@ const sanitizeCartItems = (
 
   /**
    * ========================================================
-   * GỘP CÁC DÒNG TRÙNG LINE ID
+   * MERGE LINE TRÙNG NHAU
    * ========================================================
    */
   const mergedMap =
@@ -849,33 +810,35 @@ const sanitizeCartItems = (
             ...item,
           }
         );
-      } else {
-        mergedMap.set(
-          item.lineId,
-          {
-            ...existing,
 
-            quantity:
-              existing.quantity +
-              item.quantity,
-
-            unitPrice:
-              item.unitPrice,
-
-            isDiscounted:
-              item.isDiscounted,
-
-            product:
-              item.product,
-          }
-        );
+        return;
       }
+
+      mergedMap.set(
+        item.lineId,
+        {
+          ...existing,
+
+          quantity:
+            existing.quantity +
+            item.quantity,
+
+          unitPrice:
+            item.unitPrice,
+
+          isDiscounted:
+            item.isDiscounted,
+
+          product:
+            item.product,
+        }
+      );
     }
   );
 
   /**
    * ========================================================
-   * FINAL SANITIZE
+   * FINAL
    * ========================================================
    */
   return Array.from(
@@ -910,11 +873,19 @@ const syncCartToFirebase =
       sanitizeCartItems(items);
 
     try {
+      /**
+       * Cart rỗng:
+       * xóa document Firebase.
+       */
       if (
         cleanItems.length === 0
       ) {
         await deleteDoc(
           cartRef
+        );
+
+        console.log(
+          "🗑️ [CART] Firebase cart đã được xóa"
         );
 
         return;
@@ -923,7 +894,8 @@ const syncCartToFirebase =
       await setDoc(
         cartRef,
         {
-          items: cleanItems,
+          items:
+            cleanItems,
 
           updatedAt:
             new Date().toISOString(),
@@ -931,6 +903,11 @@ const syncCartToFirebase =
         {
           merge: true,
         }
+      );
+
+      console.log(
+        "☁️ [CART] Firebase sync:",
+        cleanItems
       );
     } catch (error) {
       console.error(
@@ -969,6 +946,10 @@ export const useCartStore =
           const currentUserId =
             get().userId;
 
+          /**
+           * Nếu cùng user và listener
+           * đang hoạt động thì không tạo lại.
+           */
           if (
             currentUserId ===
               userId &&
@@ -990,7 +971,14 @@ export const useCartStore =
           }
 
           /**
-           * Làm sạch local cart ngay.
+           * Snapshot đầu tiên của user mới
+           * sẽ được dùng để hydrate.
+           */
+          isInitialCartSnapshot =
+            Boolean(userId);
+
+          /**
+           * Làm sạch local cart.
            */
           const cleanedLocalItems =
             sanitizeCartItems(
@@ -1034,192 +1022,270 @@ export const useCartStore =
               userId
             );
 
+          /**
+           * ====================================================
+           * FIREBASE LISTENER
+           * ====================================================
+           */
           unsubscribeCartListener =
             onSnapshot(
               cartRef,
               (snapshot) => {
                 /**
                  * ==================================================
-                 * FIRESTORE CÓ CART
-                 * ==================================================
-                 */
-                if (
-                  snapshot.exists()
-                ) {
-                  const data =
-                    snapshot.data();
-
-                  if (
-                    data &&
-                    Array.isArray(
-                      data.items
-                    )
-                  ) {
-                    /**
-                     * Firebase cart
-                     * cũng phải qua sanitize
-                     * để cập nhật giá mới nhất.
-                     */
-                    const remoteItems =
-                      sanitizeCartItems(
-                        data.items
-                      );
-
-                    const localItems =
-                      sanitizeCartItems(
-                        get().items
-                      );
-
-                    const mergedMap =
-                      new Map<
-                        string,
-                        CartItem
-                      >();
-
-                    /**
-                     * Remote trước.
-                     */
-                    remoteItems.forEach(
-                      (item) => {
-                        mergedMap.set(
-                          item.lineId,
-                          item
-                        );
-                      }
-                    );
-
-                    /**
-                     * Local sau.
-                     */
-                    localItems.forEach(
-                      (localItem) => {
-                        const existing =
-                          mergedMap.get(
-                            localItem.lineId
-                          );
-
-                        if (
-                          existing
-                        ) {
-                          mergedMap.set(
-                            localItem.lineId,
-                            {
-                              ...existing,
-
-                              product:
-                                sanitizeCartProduct(
-                                  existing.product
-                                ),
-
-                              quantity:
-                                Math.max(
-                                  existing.quantity,
-                                  localItem.quantity
-                                ),
-
-                              /**
-                               * Giá của product
-                               * hiện tại.
-                               */
-                              unitPrice:
-                                localItem.unitPrice,
-
-                              isDiscounted:
-                                localItem.isDiscounted,
-                            }
-                          );
-                        } else {
-                          mergedMap.set(
-                            localItem.lineId,
-                            localItem
-                          );
-                        }
-                      }
-                    );
-
-                    const finalItems =
-                      sanitizeCartItems(
-                        Array.from(
-                          mergedMap.values()
-                        )
-                      );
-
-                    set({
-                      items:
-                        finalItems,
-                    });
-
-                    console.group(
-                      "🛒 [CART] Firestore Snapshot"
-                    );
-
-                    console.log(
-                      "Remote:",
-                      remoteItems
-                    );
-
-                    console.log(
-                      "Local:",
-                      localItems
-                    );
-
-                    console.log(
-                      "Final:",
-                      finalItems
-                    );
-
-                    console.groupEnd();
-
-                    /**
-                     * Luôn đồng bộ lại
-                     * nếu cart sau sanitize
-                     * khác Firebase.
-                     */
-                    const before =
-                      JSON.stringify(
-                        data.items
-                      );
-
-                    const after =
-                      JSON.stringify(
-                        finalItems
-                      );
-
-                    if (
-                      before !==
-                      after
-                    ) {
-                      console.log(
-                        "🧹 [CART] Cập nhật cart Firebase theo giá mới"
-                      );
-
-                      void syncCartToFirebase(
-                        userId,
-                        finalItems
-                      );
-                    }
-                  }
-                }
-
-                /**
-                 * ==================================================
                  * FIRESTORE CHƯA CÓ CART
                  * ==================================================
                  */
-                else {
+                if (
+                  !snapshot.exists()
+                ) {
                   const localItems =
                     sanitizeCartItems(
                       get().items
                     );
 
+                  /**
+                   * Firebase chưa có cart.
+                   *
+                   * Chỉ upload local ở lần đầu.
+                   */
                   if (
+                    isInitialCartSnapshot &&
                     localItems.length > 0
                   ) {
+                    console.log(
+                      "☁️ [CART] Firebase chưa có cart → upload local"
+                    );
+
                     void syncCartToFirebase(
                       userId,
                       localItems
                     );
                   }
+
+                  set({
+                    items:
+                      localItems,
+                  });
+
+                  isInitialCartSnapshot =
+                    false;
+
+                  return;
+                }
+
+                const data =
+                  snapshot.data();
+
+                const remoteItems =
+                  sanitizeCartItems(
+                    data?.items
+                  );
+
+                /**
+                 * ==================================================
+                 * SNAPSHOT ĐẦU TIÊN
+                 * ==================================================
+                 *
+                 * Chỉ snapshot đầu tiên mới
+                 * merge local + remote.
+                 */
+                if (
+                  isInitialCartSnapshot
+                ) {
+                  const localItems =
+                    sanitizeCartItems(
+                      get().items
+                    );
+
+                  const mergedMap =
+                    new Map<
+                      string,
+                      CartItem
+                    >();
+
+                  /**
+                   * Firebase trước.
+                   */
+                  remoteItems.forEach(
+                    (item) => {
+                      mergedMap.set(
+                        item.lineId,
+                        item
+                      );
+                    }
+                  );
+
+                  /**
+                   * Local sau.
+                   */
+                  localItems.forEach(
+                    (localItem) => {
+                      const existing =
+                        mergedMap.get(
+                          localItem.lineId
+                        );
+
+                      if (
+                        !existing
+                      ) {
+                        mergedMap.set(
+                          localItem.lineId,
+                          localItem
+                        );
+
+                        return;
+                      }
+
+                      mergedMap.set(
+                        localItem.lineId,
+                        {
+                          ...existing,
+
+                          product:
+                            sanitizeCartProduct(
+                              existing.product
+                            ),
+
+                          quantity:
+                            Math.max(
+                              existing.quantity,
+                              localItem.quantity
+                            ),
+
+                          unitPrice:
+                            existing.unitPrice,
+
+                          isDiscounted:
+                            existing.isDiscounted,
+                        }
+                      );
+                    }
+                  );
+
+                  const finalItems =
+                    sanitizeCartItems(
+                      Array.from(
+                        mergedMap.values()
+                      )
+                    );
+
+                  set({
+                    items:
+                      finalItems,
+                  });
+
+                  /**
+                   * Đã hydrate xong.
+                   */
+                  isInitialCartSnapshot =
+                    false;
+
+                  console.group(
+                    "🛒 [CART] Initial Firebase Hydration"
+                  );
+
+                  console.log(
+                    "Remote:",
+                    remoteItems
+                  );
+
+                  console.log(
+                    "Local:",
+                    localItems
+                  );
+
+                  console.log(
+                    "Final:",
+                    finalItems
+                  );
+
+                  console.groupEnd();
+
+                  /**
+                   * Nếu merge làm thay đổi
+                   * Firebase thì cập nhật lại.
+                   */
+                  const remoteJson =
+                    JSON.stringify(
+                      remoteItems
+                    );
+
+                  const finalJson =
+                    JSON.stringify(
+                      finalItems
+                    );
+
+                  if (
+                    remoteJson !==
+                    finalJson
+                  ) {
+                    void syncCartToFirebase(
+                      userId,
+                      finalItems
+                    );
+                  }
+
+                  return;
+                }
+
+                /**
+                 * ==================================================
+                 * SNAPSHOT SAU HYDRATION
+                 * ==================================================
+                 *
+                 * Firebase là SOURCE OF TRUTH.
+                 *
+                 * Không merge local nữa.
+                 */
+                const finalItems =
+                  sanitizeCartItems(
+                    remoteItems
+                  );
+
+                set({
+                  items:
+                    finalItems,
+                });
+
+                console.group(
+                  "☁️ [CART] Firebase Snapshot"
+                );
+
+                console.log(
+                  "Remote:",
+                  remoteItems
+                );
+
+                console.log(
+                  "Final:",
+                  finalItems
+                );
+
+                console.groupEnd();
+
+                /**
+                 * Nếu sanitize thay đổi dữ liệu
+                 * thì đồng bộ lại Firebase.
+                 */
+                const before =
+                  JSON.stringify(
+                    data?.items ?? []
+                  );
+
+                const after =
+                  JSON.stringify(
+                    finalItems
+                  );
+
+                if (
+                  before !==
+                  after
+                ) {
+                  void syncCartToFirebase(
+                    userId,
+                    finalItems
+                  );
                 }
               },
               (error) => {
@@ -1246,6 +1312,11 @@ export const useCartStore =
             isOpen: false,
           }),
 
+        /**
+         * ======================================================
+         * SELECT MERCHANT
+         * ======================================================
+         */
         setSelectedMerchantId:
           (
             merchantId
@@ -1266,7 +1337,7 @@ export const useCartStore =
           quantity = 1
         ) => {
           /**
-           * Luôn sanitize cart trước.
+           * Làm sạch cart hiện tại.
            */
           const currentItems =
             sanitizeCartItems(
@@ -1274,7 +1345,7 @@ export const useCartStore =
             );
 
           /**
-           * Sanitize product mới.
+           * Làm sạch product mới.
            */
           const cleanProduct =
             sanitizeCartProduct(
@@ -1288,29 +1359,27 @@ export const useCartStore =
             );
 
           const merchantId =
-            cleanProduct.merchantId ||
-            cleanProduct.shopId ||
-            "";
+            getProductMerchantId(
+              cleanProduct
+            );
 
           /**
-           * Các line hiện tại của
-           * cùng product + merchant.
+           * Các line của cùng:
+           *
+           * merchant + product
            */
           const productItems =
             currentItems.filter(
               (item) =>
                 item.product.id ===
                   cleanProduct.id &&
-                (
+                getProductMerchantId(
                   item.product
-                    .merchantId ||
-                  item.product.shopId ||
-                  ""
                 ) === merchantId
             );
 
           /**
-           * Tổng quantity đang hưởng KM.
+           * Tổng số lượng đang sale.
            */
           const currentDiscountQuantity =
             productItems
@@ -1329,7 +1398,7 @@ export const useCartStore =
               );
 
           /**
-           * Tính KM.
+           * Tính promotion.
            */
           const discountInfo =
             getDiscountInfo(
@@ -1344,7 +1413,7 @@ export const useCartStore =
 
           /**
            * ====================================================
-           * ADD DISCOUNT LINE
+           * ADD DISCOUNT
            * ====================================================
            */
           if (
@@ -1416,21 +1485,11 @@ export const useCartStore =
                   true,
               });
             }
-
-            console.log(
-              `🏷️ [CART] ${
-                discountInfo.discountQuantityToAdd
-              } x ${
-                discountInfo.discountPrice.toLocaleString(
-                  "vi-VN"
-                )
-              }đ`
-            );
           }
 
           /**
            * ====================================================
-           * ADD REGULAR LINE
+           * ADD REGULAR
            * ====================================================
            */
           if (
@@ -1502,20 +1561,10 @@ export const useCartStore =
                   false,
               });
             }
-
-            console.log(
-              `💰 [CART] ${
-                discountInfo.regularQuantityToAdd
-              } x ${
-                discountInfo.originalPrice.toLocaleString(
-                  "vi-VN"
-                )
-              }đ`
-            );
           }
 
           /**
-           * Final sanitize.
+           * Sanitize lần cuối.
            */
           updatedItems =
             sanitizeCartItems(
@@ -1523,7 +1572,7 @@ export const useCartStore =
             );
 
           console.group(
-            "🛒 [CART] ADD ITEM RESULT"
+            "🛒 [CART] ADD ITEM"
           );
 
           console.log(
@@ -1542,22 +1591,25 @@ export const useCartStore =
           );
 
           console.log(
-            "Quantity requested:",
+            "Quantity:",
             safeQuantity
           );
 
           console.log(
-            "Current discount quantity:",
-            currentDiscountQuantity
+            "Before:",
+            currentItems
           );
 
           console.log(
-            "Cart after add:",
+            "After:",
             updatedItems
           );
 
           console.groupEnd();
 
+          /**
+           * Cập nhật UI.
+           */
           set({
             items:
               updatedItems,
@@ -1565,6 +1617,9 @@ export const useCartStore =
             isOpen: true,
           });
 
+          /**
+           * Đồng bộ Firebase.
+           */
           void syncCartToFirebase(
             get().userId,
             updatedItems
@@ -1576,25 +1631,93 @@ export const useCartStore =
          * REMOVE ITEM
          * ======================================================
          *
-         * Xóa toàn bộ dòng của product.
+         * Xóa chính xác một line.
+         *
+         * KHÔNG dùng productId.
          */
         removeItem: (
-          productId
+          lineId
         ) => {
-          const updatedItems =
+          const currentItems =
             sanitizeCartItems(
               get().items
-            ).filter(
-              (item) =>
-                item.product.id !==
-                productId
             );
 
+          const itemToRemove =
+            currentItems.find(
+              (item) =>
+                item.lineId ===
+                lineId
+            );
+
+          if (
+            !itemToRemove
+          ) {
+            console.warn(
+              "⚠️ [CART] Không tìm thấy lineId:",
+              lineId
+            );
+
+            return;
+          }
+
+          const updatedItems =
+            currentItems.filter(
+              (item) =>
+                item.lineId !==
+                lineId
+            );
+
+          console.group(
+            "🗑️ [CART] REMOVE ITEM"
+          );
+
+          console.log(
+            "Line ID:",
+            lineId
+          );
+
+          console.log(
+            "Product:",
+            itemToRemove.product.name
+          );
+
+          console.log(
+            "Product ID:",
+            itemToRemove.product.id
+          );
+
+          console.log(
+            "Merchant:",
+            itemToRemove.product.merchantName
+          );
+
+          console.log(
+            "Before:",
+            currentItems
+          );
+
+          console.log(
+            "After:",
+            updatedItems
+          );
+
+          console.groupEnd();
+
+          /**
+           * UI update ngay.
+           */
           set({
             items:
               updatedItems,
           });
 
+          /**
+           * Firebase update.
+           *
+           * Nếu empty:
+           * syncCartToFirebase sẽ delete document.
+           */
           void syncCartToFirebase(
             get().userId,
             updatedItems
@@ -1605,9 +1728,16 @@ export const useCartStore =
          * ======================================================
          * UPDATE QUANTITY
          * ======================================================
+         *
+         * Dùng lineId.
+         *
+         * delta:
+         *
+         * +1 = tăng
+         * -1 = giảm
          */
         updateQuantity: (
-          productId,
+          lineId,
           delta
         ) => {
           if (delta === 0) {
@@ -1619,103 +1749,92 @@ export const useCartStore =
               get().items
             );
 
+          const targetIndex =
+            currentItems.findIndex(
+              (item) =>
+                item.lineId ===
+                lineId
+            );
+
+          if (
+            targetIndex < 0
+          ) {
+            console.warn(
+              "⚠️ [CART] Không tìm thấy lineId:",
+              lineId
+            );
+
+            return;
+          }
+
+          const targetItem =
+            currentItems[targetIndex];
+
           /**
            * ====================================================
            * GIẢM
            * ====================================================
-           *
-           * Giảm dòng thường trước.
-           * Giữ dòng KM lâu nhất.
            */
           if (delta < 0) {
-            let remaining =
-              Math.abs(delta);
+            const newQuantity =
+              targetItem.quantity +
+              delta;
 
             let updatedItems =
-              currentItems.map(
-                (item) => ({
-                  ...item,
-                })
-              );
+              [...currentItems];
 
             /**
-             * Giảm regular trước.
+             * Quantity <= 0:
+             * xóa chính dòng đó.
              */
-            for (
-              let i =
-                updatedItems.length -
-                1;
-              i >= 0 &&
-              remaining > 0;
-              i--
+            if (
+              newQuantity <= 0
             ) {
-              const item =
-                updatedItems[i];
-
-              if (
-                item.product.id !==
-                  productId ||
-                item.isDiscounted
-              ) {
-                continue;
-              }
-
-              const remove =
-                Math.min(
-                  item.quantity,
-                  remaining
+              updatedItems =
+                updatedItems.filter(
+                  (_, index) =>
+                    index !==
+                    targetIndex
                 );
+            } else {
+              updatedItems =
+                updatedItems.map(
+                  (
+                    item,
+                    index
+                  ) =>
+                    index ===
+                    targetIndex
+                      ? {
+                          ...item,
 
-              item.quantity -=
-                remove;
-
-              remaining -=
-                remove;
-            }
-
-            /**
-             * Sau đó giảm discount.
-             */
-            for (
-              let i =
-                updatedItems.length -
-                1;
-              i >= 0 &&
-              remaining > 0;
-              i--
-            ) {
-              const item =
-                updatedItems[i];
-
-              if (
-                item.product.id !==
-                  productId ||
-                !item.isDiscounted
-              ) {
-                continue;
-              }
-
-              const remove =
-                Math.min(
-                  item.quantity,
-                  remaining
+                          quantity:
+                            newQuantity,
+                        }
+                      : item
                 );
-
-              item.quantity -=
-                remove;
-
-              remaining -=
-                remove;
             }
 
             updatedItems =
               sanitizeCartItems(
-                updatedItems.filter(
-                  (item) =>
-                    item.quantity >
-                    0
-                )
+                updatedItems
               );
+
+            console.log(
+              "➖ [CART] Giảm quantity:",
+              {
+                lineId,
+                product:
+                  targetItem.product.name,
+                oldQuantity:
+                  targetItem.quantity,
+                newQuantity:
+                  Math.max(
+                    0,
+                    newQuantity
+                  ),
+              }
+            );
 
             set({
               items:
@@ -1735,28 +1854,11 @@ export const useCartStore =
            * TĂNG
            * ====================================================
            *
-           * Không cộng trực tiếp vào line.
+           * Không cộng trực tiếp.
            *
-           * Gọi lại addItem để kiểm tra
-           * promotion hiện tại.
+           * Gọi addItem để tính lại
+           * promotion.
            */
-          const targetItem =
-            currentItems.find(
-              (item) =>
-                item.product.id ===
-                  productId &&
-                item.isDiscounted
-            ) ||
-            currentItems.find(
-              (item) =>
-                item.product.id ===
-                productId
-            );
-
-          if (!targetItem) {
-            return;
-          }
-
           get().addItem(
             targetItem.product,
             undefined,
@@ -1796,6 +1898,10 @@ export const useCartStore =
               await deleteDoc(
                 cartRef
               );
+
+              console.log(
+                "🗑️ [CART] Xóa toàn bộ cart Firebase"
+              );
             } catch (error) {
               console.error(
                 "❌ [CART] Lỗi xóa cart:",
@@ -1806,37 +1912,39 @@ export const useCartStore =
 
         /**
          * ======================================================
-         * CLEAR MERCHANT
+         * CLEAR MERCHANT ITEMS
          * ======================================================
          */
         clearMerchantItems:
           async (
             merchantId
           ) => {
-            const updatedItems =
+            const currentItems =
               sanitizeCartItems(
                 get().items
-              ).filter(
+              );
+
+            const updatedItems =
+              currentItems.filter(
                 (item) =>
-                  (
+                  getProductMerchantId(
                     item.product
-                      .merchantId ||
-                    item.product.shopId ||
-                    ""
                   ) !== merchantId
               );
+
+            const selected =
+              get()
+                .selectedMerchantId;
 
             set({
               items:
                 updatedItems,
 
               selectedMerchantId:
-                get()
-                  .selectedMerchantId ===
+                selected ===
                 merchantId
                   ? null
-                  : get()
-                      .selectedMerchantId,
+                  : selected,
             });
 
             await syncCartToFirebase(
@@ -1863,9 +1971,9 @@ export const useCartStore =
                 item
               ) => {
                 const merchantId =
-                  item.product
-                    .merchantId ||
-                  item.product.shopId ||
+                  getProductMerchantId(
+                    item.product
+                  ) ||
                   "unknown_merchant";
 
                 if (
@@ -1905,11 +2013,8 @@ export const useCartStore =
             merchantId
               ? items.filter(
                   (item) =>
-                    (
+                    getProductMerchantId(
                       item.product
-                        .merchantId ||
-                      item.product.shopId ||
-                      ""
                     ) ===
                     merchantId
                 )
@@ -1944,11 +2049,8 @@ export const useCartStore =
             merchantId
               ? items.filter(
                   (item) =>
-                    (
+                    getProductMerchantId(
                       item.product
-                        .merchantId ||
-                      item.product.shopId ||
-                      ""
                     ) ===
                     merchantId
                 )
