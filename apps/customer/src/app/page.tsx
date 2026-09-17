@@ -57,6 +57,12 @@ interface Shop {
 
   openTime?: string;
   closeTime?: string;
+
+  /**
+   * Mức chiết khấu/commission mà quán dành cho Sàn.
+   * Dùng nội bộ để xác định nhóm quán được ưu tiên hiển thị.
+   */
+  commissionPercent?: number;
 }
 
 interface Product {
@@ -137,9 +143,28 @@ interface Voucher {
   usageLimit?: number | null;
   usedCount?: number;
 
+  startDate?: string | null;
   endDate?: string | null;
 
   isActive?: boolean;
+
+  // Voucher có thể áp dụng toàn hệ thống
+  // hoặc chỉ dành riêng cho một quán.
+  targetType?: "ALL" | "MERCHANT";
+
+  merchantId?: string | null;
+  merchantName?: string | null;
+  merchantCode?: string | null;
+  merchantCommissionPercent?: number | null;
+
+  /**
+   * Voucher do hệ thống tạo riêng cho merchant.
+   * Hỗ trợ cả dữ liệu mới và dữ liệu cũ.
+   */
+  isSystemCreated?: boolean;
+  source?: string | null;
+  createdByRole?: string | null;
+  createdByType?: string | null;
 }
 
 interface ToastMessage {
@@ -180,6 +205,9 @@ interface ProductView extends Product {
   estimatedDeliveryTime: number;
 
   searchText: string;
+
+  // Voucher đang áp dụng riêng cho quán của món này.
+  merchantVouchers: Voucher[];
 }
 
 /**
@@ -1869,6 +1897,12 @@ export default function HomePage() {
                   closeTime:
                     data.closeTime ||
                     "23:00",
+
+                  commissionPercent:
+                    Number(
+                      data.commissionPercent ??
+                        0
+                    ) || 0,
                 };
 
               shopMap[
@@ -2223,6 +2257,10 @@ export default function HomePage() {
                     0
                 ),
 
+                startDate:
+                  data.startDate ??
+                  null,
+
                 endDate:
                   data.endDate ??
                   null,
@@ -2230,6 +2268,79 @@ export default function HomePage() {
                 isActive:
                   data.isActive !==
                   false,
+
+                // -------------------------------------------
+                // TARGET SHOP
+                // -------------------------------------------
+
+                targetType:
+                  data.targetType ===
+                  "MERCHANT"
+                    ? "MERCHANT"
+                    : data.merchantId
+                    ? "MERCHANT"
+                    : "ALL",
+
+                merchantId:
+                  data.merchantId ||
+                  null,
+
+                merchantName:
+                  data.merchantName ||
+                  null,
+
+                merchantCode:
+                  data.merchantCode ||
+                  null,
+
+                merchantCommissionPercent:
+                  data.merchantCommissionPercent !==
+                    undefined &&
+                  data.merchantCommissionPercent !==
+                    null
+                    ? Number(
+                        data.merchantCommissionPercent
+                      )
+                    : null,
+
+                source:
+                  data.source ??
+                  data.createdSource ??
+                  null,
+
+                createdByRole:
+                  data.createdByRole ??
+                  data.creatorRole ??
+                  null,
+
+                createdByType:
+                  data.createdByType ??
+                  data.creatorType ??
+                  null,
+
+                isSystemCreated:
+                  data.isSystemCreated === true ||
+                  String(
+                    data.source ??
+                      data.createdSource ??
+                      data.createdByRole ??
+                      data.creatorRole ??
+                      data.createdByType ??
+                      data.creatorType ??
+                      ""
+                  ).toUpperCase() ===
+                    "SYSTEM" ||
+                  String(
+                    data.createdBy ??
+                      ""
+                  ).toUpperCase() ===
+                    "SYSTEM" ||
+                  (Boolean(
+                    data.merchantCommissionPercent
+                  ) &&
+                    (data.targetType ===
+                      "MERCHANT" ||
+                      Boolean(data.merchantId))),
               });
             }
           );
@@ -2437,11 +2548,192 @@ export default function HomePage() {
 
   /**
    * ==========================================================
+   * FEATURED HIGH-COMMISSION SHOPS
+   * ==========================================================
+   *
+   * Đây là quyền lợi hiển thị dành cho các quán có mức
+   * commission từ 15% trở lên.
+   * Không hiển thị % chiết khấu cho khách hàng.
+   */
+
+  const HIGH_COMMISSION_THRESHOLD = 15;
+
+  const featuredShops = useMemo(() => {
+    return Object.values(shops)
+      .filter(
+        (shop) =>
+          Number(
+            shop.commissionPercent ?? 0
+          ) >= HIGH_COMMISSION_THRESHOLD
+      )
+      .sort((a, b) => {
+        const commissionDiff =
+          Number(b.commissionPercent ?? 0) -
+          Number(a.commissionPercent ?? 0);
+
+        if (commissionDiff !== 0) {
+          return commissionDiff;
+        }
+
+        const ratingDiff =
+          Number(b.rating ?? 0) -
+          Number(a.rating ?? 0);
+
+        if (ratingDiff !== 0) {
+          return ratingDiff;
+        }
+
+        return 0;
+      })
+      .slice(0, 8);
+  }, [shops]);
+
+  /**
+   * ==========================================================
+   * MERCHANT VOUCHER MAP
+   * ==========================================================
+   *
+   * Chỉ lấy voucher:
+   * - đang hoạt động
+   * - trong thời gian hiệu lực
+   * - chưa dùng hết lượt
+   * - có merchantId
+   * - là voucher do hệ thống tạo riêng cho merchant
+   *
+   * Map theo cả merchantId và merchantCode để tương thích
+   * với dữ liệu sản phẩm cũ.
+   */
+
+  const merchantVoucherMap =
+    useMemo(() => {
+      const map: Record<
+        string,
+        Voucher[]
+      > = {};
+
+      const now = Date.now();
+
+      vouchers.forEach((voucher) => {
+        if (voucher.isActive === false) {
+          return;
+        }
+
+        if (
+          voucher.targetType !==
+            "MERCHANT" ||
+          !voucher.merchantId ||
+          voucher.isSystemCreated !== true
+        ) {
+          return;
+        }
+
+        // Chưa tới thời gian bắt đầu
+        if (voucher.startDate) {
+          const start = new Date(
+            voucher.startDate
+          ).getTime();
+
+          if (
+            Number.isFinite(start) &&
+            now < start
+          ) {
+            return;
+          }
+        }
+
+        // Đã hết hạn
+        if (voucher.endDate) {
+          const end = new Date(
+            voucher.endDate
+          ).getTime();
+
+          if (
+            Number.isFinite(end) &&
+            now > end
+          ) {
+            return;
+          }
+        }
+
+        // Đã dùng hết voucher
+        if (
+          voucher.usageLimit !==
+            null &&
+          voucher.usageLimit !==
+            undefined &&
+          Number(voucher.usedCount || 0) >=
+            Number(voucher.usageLimit)
+        ) {
+          return;
+        }
+
+        const keys = [
+          voucher.merchantId,
+          voucher.merchantCode,
+        ].filter(
+          (value): value is string =>
+            Boolean(value)
+        );
+
+        keys.forEach((key) => {
+          if (!map[key]) {
+            map[key] = [];
+          }
+
+          // Tránh push trùng cùng một voucher
+          if (
+            !map[key].some(
+              (item) =>
+                item.id ===
+                voucher.id
+            )
+          ) {
+            map[key].push(voucher);
+          }
+        });
+      });
+
+      // Voucher shipping được ưu tiên hiển thị trước
+      Object.values(map).forEach(
+        (list) => {
+          list.sort((a, b) => {
+            if (
+              a.applyType ===
+                "SHIPPING" &&
+              b.applyType !==
+                "SHIPPING"
+            ) {
+              return -1;
+            }
+
+            if (
+              a.applyType !==
+                "SHIPPING" &&
+              b.applyType ===
+                "SHIPPING"
+            ) {
+              return 1;
+            }
+
+            return (
+              b.discountValue -
+              a.discountValue
+            );
+          });
+        }
+      );
+
+      return map;
+    }, [vouchers]);
+
+  /**
+   * ==========================================================
    * PRODUCT VIEW MODEL
    * ==========================================================
    *
    * Toàn bộ:
    * - promotion
+   * - merchant vouchers
    * - distance
    * - ETA
    * - search text
@@ -2481,6 +2773,41 @@ export default function HomePage() {
             `${product.name} ${product.description} ${product.shopName} ${product.category}`
               .toLowerCase();
 
+          const voucherKeys = [
+            product.merchantId,
+            product.shopId,
+            product.merchantCode,
+          ].filter(
+            (value): value is string =>
+              Boolean(value)
+          );
+
+          const merchantVouchers: Voucher[] =
+            [];
+
+          voucherKeys.forEach((key) => {
+            const list =
+              merchantVoucherMap[key];
+
+            if (!list) {
+              return;
+            }
+
+            list.forEach((voucher) => {
+              if (
+                !merchantVouchers.some(
+                  (item) =>
+                    item.id ===
+                    voucher.id
+                )
+              ) {
+                merchantVouchers.push(
+                  voucher
+                );
+              }
+            });
+          });
+
           return {
             ...product,
 
@@ -2495,12 +2822,15 @@ export default function HomePage() {
             estimatedDeliveryTime,
 
             searchText,
+
+            merchantVouchers,
           };
         }
       );
     }, [
       products,
       calculatedDistances,
+      merchantVoucherMap,
     ]);
 
   /**
@@ -3408,7 +3738,12 @@ export default function HomePage() {
           ====================================================== */}
 
       {!searchQuery &&
-        vouchers.length >
+        vouchers.filter(
+          (voucher) =>
+            voucher.targetType !==
+              "MERCHANT" ||
+            voucher.isSystemCreated === true
+        ).length >
           0 && (
           <div className="bg-gradient-to-b from-amber-500/10 via-orange-500/5 to-transparent py-2.5 border-b border-orange-200/40">
             <div className="px-3 flex items-center justify-between mb-2">
@@ -3424,8 +3759,15 @@ export default function HomePage() {
             </div>
 
             <div className="flex gap-2 overflow-x-auto no-scrollbar px-3 py-0.5">
-              {vouchers.map(
-                (voucher) => {
+              {vouchers
+                .filter(
+                  (voucher) =>
+                    voucher.targetType !==
+                      "MERCHANT" ||
+                    voucher.isSystemCreated === true
+                )
+                .map(
+                  (voucher) => {
                   const isSaved =
                     savedVouchers.includes(
                       voucher.code
@@ -3513,6 +3855,27 @@ export default function HomePage() {
                               voucher.title
                             }
                           </h4>
+
+                          {voucher.targetType ===
+                            "MERCHANT" &&
+                            voucher.merchantName && (
+                            <div className="mt-1 flex items-center gap-1 min-w-0">
+                              <span className="text-[7px] text-stone-400 shrink-0">
+                                Tại
+                              </span>
+
+                              <span className="text-[8px] font-extrabold text-orange-600 truncate">
+                                {voucher.merchantName}
+                              </span>
+                            </div>
+                          )}
+
+                          {voucher.targetType !==
+                            "MERCHANT" && (
+                            <div className="mt-1 text-[7px] font-bold text-sky-600">
+                              Toàn hệ thống
+                            </div>
+                          )}
                         </div>
 
                         <div className="space-y-0.5">
@@ -3578,6 +3941,96 @@ export default function HomePage() {
                   );
                 }
               )}
+            </div>
+          </div>
+        )}
+
+      {/* ======================================================
+          FEATURED SHOPS
+          ====================================================== */}
+
+      {!searchQuery &&
+        featuredShops.length > 0 && (
+          <div className="bg-white py-2.5 border-b border-stone-200/60 shadow-2xs">
+            <div className="px-3 flex items-center justify-between mb-2">
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-base">🌟</span>
+                  <h3 className="text-[11px] font-black text-stone-900 tracking-tight">
+                    QUÁN ƯU ĐÃI NỔI BẬT
+                  </h3>
+                </div>
+                <p className="text-[8px] text-stone-400 font-medium ml-6 mt-0.5">
+                  Được ưu tiên hiển thị nhờ chính sách hợp tác nổi bật
+                </p>
+              </div>
+
+              <span className="shrink-0 bg-orange-50 text-[#ee4d2d] border border-orange-200/70 text-[8px] font-black px-2 py-1 rounded-full">
+                Ưu đãi từ Sàn
+              </span>
+            </div>
+
+            <div className="flex gap-2 overflow-x-auto no-scrollbar px-3 pb-0.5">
+              {featuredShops.map((shop) => {
+                const systemVoucherCount =
+                  (merchantVoucherMap[shop.id] || []).length ||
+                  (shop.merchantCode
+                    ? (merchantVoucherMap[shop.merchantCode] || []).length
+                    : 0);
+
+                return (
+                  <button
+                    key={shop.id}
+                    type="button"
+                    onClick={() =>
+                      setSelectedShop({
+                        ...shop,
+                        distance: getShopDistance(shop),
+                      })
+                    }
+                    className="min-w-[142px] max-w-[142px] text-left bg-gradient-to-br from-white to-orange-50/40 border border-orange-200/70 rounded-xl p-2 hover:border-[#ee4d2d] hover:shadow-sm transition active:scale-[0.98] shrink-0"
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className="relative shrink-0">
+                        <img
+                          src={shop.avatar}
+                          alt={shop.name}
+                          loading="lazy"
+                          className="w-9 h-9 rounded-full object-cover border-2 border-white shadow-sm"
+                        />
+                        {shop.isOpen && (
+                          <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-white" />
+                        )}
+                      </div>
+
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[10px] font-black text-stone-800 truncate">
+                          {shop.name}
+                        </p>
+                        <p className="text-[8px] text-stone-500 mt-0.5">
+                          ⭐ {Number(shop.rating || 0).toFixed(1)} · {getShopDistance(shop)}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-2 flex items-center justify-between gap-1">
+                      <span className="text-[8px] font-black text-[#ee4d2d] bg-orange-100 px-1.5 py-0.5 rounded-md">
+                        Quán nổi bật
+                      </span>
+
+                      {systemVoucherCount > 0 ? (
+                        <span className="text-[7px] font-extrabold text-emerald-700 bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded-md truncate">
+                          🎁 Có voucher
+                        </span>
+                      ) : (
+                        <span className="text-[7px] font-bold text-stone-400 truncate">
+                          Xem quán →
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}
@@ -4362,6 +4815,62 @@ export default function HomePage() {
                               %
                             </div>
                           )}
+
+                        {/* ====================================
+                            VOUCHER CỦA QUÁN
+                            ==================================== */}
+
+                        {product.merchantVouchers.length >
+                          0 && (
+                          <div className="absolute bottom-1.5 left-1.5 right-1.5 z-10">
+                            <div className="flex items-center gap-1.5 max-w-full rounded-lg bg-white/95 backdrop-blur-sm border border-emerald-200 shadow-sm px-2 py-1">
+                              <span className="shrink-0 text-[10px] leading-none">
+                                🎁
+                              </span>
+
+                              <span className="truncate text-[8px] font-extrabold text-emerald-700">
+                                {(() => {
+                                  const voucher =
+                                    product.merchantVouchers[0];
+
+                                  if (
+                                    voucher.applyType ===
+                                    "SHIPPING"
+                                  ) {
+                                    if (
+                                      voucher.discountType ===
+                                      "PERCENTAGE"
+                                    ) {
+                                      return `Giảm ${voucher.discountValue}% phí ship`;
+                                    }
+
+                                    return `Giảm ${formatCurrency(
+                                      voucher.discountValue
+                                    )} phí ship`;
+                                  }
+
+                                  if (
+                                    voucher.discountType ===
+                                    "PERCENTAGE"
+                                  ) {
+                                    return `Giảm ${voucher.discountValue}% đơn`;
+                                  }
+
+                                  return `Giảm ${formatCurrency(
+                                    voucher.discountValue
+                                  )}`;
+                                })()}
+                              </span>
+
+                              {product.merchantVouchers.length >
+                                1 && (
+                                <span className="shrink-0 text-[7px] font-bold text-emerald-600 bg-emerald-50 rounded px-1 py-0.5">
+                                  +{product.merchantVouchers.length - 1}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </div>
 
                       <div className="p-2 space-y-1">
