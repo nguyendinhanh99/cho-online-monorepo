@@ -38,6 +38,13 @@ interface Shop {
   id: string;
   merchantCode?: string;
 
+  /**
+   * Trạng thái tài khoản merchant trong Firestore.
+   * Chỉ merchant APPROVED / ACTIVE mới được phép xuất hiện
+   * trên sàn khách hàng.
+   */
+  status: string;
+
   name: string;
   avatar: string;
 
@@ -765,6 +772,39 @@ const DEFAULT_PRODUCT_IMAGE =
 
 const DEFAULT_SHOP_AVATAR =
   "https://images.unsplash.com/photo-1554118811-1e0d58224f24?w=100";
+
+/**
+ * ============================================================
+ * MERCHANT VISIBILITY
+ * ============================================================
+ *
+ * Chỉ merchant đã được hệ thống duyệt / kích hoạt mới được
+ * xuất hiện trên sàn khách hàng.
+ *
+ * BLOCKED / PENDING / REJECTED / SUSPENDED / INACTIVE /
+ * hoặc status rỗng đều bị ẩn.
+ *
+ * Việc dùng whitelist thay vì blacklist rất quan trọng:
+ * nếu một merchant mới tạo chưa có status thì mặc định KHÔNG
+ * được hiển thị cho khách.
+ */
+const PUBLIC_MERCHANT_STATUSES = new Set([
+  "APPROVED",
+  "ACTIVE",
+]);
+
+const isMerchantVisible = (status: unknown): boolean => {
+  const normalizedStatus = String(
+    status ??
+      ""
+  )
+    .trim()
+    .toUpperCase();
+
+  return PUBLIC_MERCHANT_STATUSES.has(
+    normalizedStatus
+  );
+};
 
 /**
  * ============================================================
@@ -1756,6 +1796,44 @@ export default function HomePage() {
                 return;
               }
 
+              /**
+               * ==================================================
+               * QUAN TRỌNG: KIỂM TRA TRẠNG THÁI MERCHANT
+               * ==================================================
+               *
+               * Merchant BLOCKED / PENDING / REJECTED hoặc
+               * bất kỳ trạng thái nào không nằm trong whitelist
+               * sẽ không được đưa vào shopMap.
+               *
+               * Vì products chỉ được ghép với merchant có trong
+               * shopMap nên toàn bộ sản phẩm của merchant này
+               * cũng tự động bị loại khỏi sàn.
+               */
+              const merchantStatus = String(
+                data.status ??
+                  ""
+              )
+                .trim()
+                .toUpperCase();
+
+              if (!isMerchantVisible(merchantStatus)) {
+                console.log(
+                  "🚫 [MARKETPLACE] Ẩn merchant không đủ điều kiện:",
+                  {
+                    merchantId: docSnap.id,
+                    merchantCode: data.merchantCode || "",
+                    shopName:
+                      data.shopName ||
+                      data.storeName ||
+                      data.name ||
+                      "",
+                    status: merchantStatus || "EMPTY",
+                  }
+                );
+
+                return;
+              }
+
               const rawAddress =
                 data.address ||
                 data.storeAddress ||
@@ -1827,6 +1905,9 @@ export default function HomePage() {
                   id: docSnap.id,
 
                   merchantCode,
+
+                  status:
+                    merchantStatus,
 
                   name:
                     data.shopName ||
@@ -2002,6 +2083,26 @@ export default function HomePage() {
                 ];
 
               if (!matchedShop) {
+                return;
+              }
+
+              /**
+               * Bảo vệ tầng PRODUCT một lần nữa.
+               * Nếu dữ liệu merchant bị thay đổi bất thường hoặc
+               * có product cũ trỏ tới merchant không còn hợp lệ,
+               * sản phẩm vẫn không được lọt ra giao diện.
+               */
+              if (!isMerchantVisible(matchedShop.status)) {
+                console.warn(
+                  "🚫 [MARKETPLACE] Bỏ qua product của merchant không hợp lệ:",
+                  {
+                    productId: docSnap.id,
+                    merchantId: matchedShop.id,
+                    merchantCode: matchedShop.merchantCode || "",
+                    merchantStatus: matchedShop.status,
+                  }
+                );
+
                 return;
               }
 
@@ -2746,7 +2847,22 @@ export default function HomePage() {
       const nowMs =
         Date.now();
 
-      return products.map(
+      const visibleProducts =
+        products.filter((product) => {
+          const shop =
+            shops[
+              product.shopId
+            ];
+
+          return (
+            Boolean(shop) &&
+            isMerchantVisible(
+              shop?.status
+            )
+          );
+        });
+
+      return visibleProducts.map(
         (product) => {
           const promotion =
             getPromotionInfo(
@@ -3737,13 +3853,15 @@ export default function HomePage() {
           VOUCHERS
           ====================================================== */}
 
+      {/*
+        KHO VOUCHER:
+        Hiển thị TOÀN BỘ voucher đang hoạt động trên sàn.
+        Không lọc theo targetType / merchant / isSystemCreated ở UI này.
+        Voucher thuộc quán vẫn hiển thị, nhưng logic áp dụng voucher
+        ở checkout phải kiểm tra đúng merchant tương ứng.
+      */}
       {!searchQuery &&
-        vouchers.filter(
-          (voucher) =>
-            voucher.targetType !==
-              "MERCHANT" ||
-            voucher.isSystemCreated === true
-        ).length >
+        vouchers.length >
           0 && (
           <div className="bg-gradient-to-b from-amber-500/10 via-orange-500/5 to-transparent py-2.5 border-b border-orange-200/40">
             <div className="px-3 flex items-center justify-between mb-2">
@@ -3759,15 +3877,8 @@ export default function HomePage() {
             </div>
 
             <div className="flex gap-2 overflow-x-auto no-scrollbar px-3 py-0.5">
-              {vouchers
-                .filter(
-                  (voucher) =>
-                    voucher.targetType !==
-                      "MERCHANT" ||
-                    voucher.isSystemCreated === true
-                )
-                .map(
-                  (voucher) => {
+              {vouchers.map(
+                (voucher) => {
                   const isSaved =
                     savedVouchers.includes(
                       voucher.code
@@ -4127,17 +4238,6 @@ export default function HomePage() {
                       }
                     </p>
 
-                    <p
-                      className={`text-[9px] truncate ${
-                        isActive
-                          ? "text-orange-100"
-                          : "text-stone-500"
-                      }`}
-                    >
-                      {
-                        item.desc
-                      }
-                    </p>
                   </div>
                 </div>
               );
