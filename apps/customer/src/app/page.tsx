@@ -38,11 +38,6 @@ interface Shop {
   id: string;
   merchantCode?: string;
 
-  /**
-   * Trạng thái tài khoản merchant trong Firestore.
-   * Chỉ merchant APPROVED / ACTIVE mới được phép xuất hiện
-   * trên sàn khách hàng.
-   */
   status: string;
 
   name: string;
@@ -65,10 +60,6 @@ interface Shop {
   openTime?: string;
   closeTime?: string;
 
-  /**
-   * Mức chiết khấu/commission mà quán dành cho Sàn.
-   * Dùng nội bộ để xác định nhóm quán được ưu tiên hiển thị.
-   */
   commissionPercent?: number;
 }
 
@@ -89,14 +80,7 @@ interface Product {
   name: string;
   description: string;
 
-  /**
-   * Giá bán hiện tại.
-   */
   price: number;
-
-  /**
-   * Giá niêm yết / giá gốc.
-   */
   originalPrice: number;
 
   discountStock?: number | null;
@@ -130,6 +114,11 @@ interface UserLocation {
   lng?: number | null;
 }
 
+type CommissionTier =
+  | "ALL"
+  | "STANDARD"
+  | "PREMIUM";
+
 interface Voucher {
   id: string;
   code: string;
@@ -139,8 +128,8 @@ interface Voucher {
   applyType: "ORDER" | "SHIPPING";
 
   discountType:
-    | "FIXED"
-    | "PERCENTAGE";
+  | "FIXED"
+  | "PERCENTAGE";
 
   discountValue: number;
 
@@ -150,13 +139,19 @@ interface Voucher {
   usageLimit?: number | null;
   usedCount?: number;
 
+  limitPerUser?: number;
+
   startDate?: string | null;
   endDate?: string | null;
 
   isActive?: boolean;
 
-  // Voucher có thể áp dụng toàn hệ thống
-  // hoặc chỉ dành riêng cho một quán.
+  /**
+   * Voucher có thể áp dụng:
+   *
+   * ALL       = toàn hệ thống
+   * MERCHANT  = riêng một quán
+   */
   targetType?: "ALL" | "MERCHANT";
 
   merchantId?: string | null;
@@ -165,8 +160,39 @@ interface Voucher {
   merchantCommissionPercent?: number | null;
 
   /**
+   * Gói hoa hồng đủ điều kiện.
+   *
+   * ALL
+   * STANDARD
+   * PREMIUM
+   */
+  eligibleCommissionTier?: CommissionTier;
+
+  /**
+   * Funding
+   */
+  fundingType?:
+  | "PLATFORM"
+  | "MERCHANT"
+  | "SHARED";
+
+  platformFundingPercent?: number | null;
+  merchantFundingPercent?: number | null;
+
+  /**
+   * Campaign
+   */
+  campaignType?:
+  | "WELCOME"
+  | "FREESHIP"
+  | "ORDER_DISCOUNT"
+  | "WEEKEND"
+  | "FLASH_SALE"
+  | "PREMIUM"
+  | null;
+
+  /**
    * Voucher do hệ thống tạo riêng cho merchant.
-   * Hỗ trợ cả dữ liệu mới và dữ liệu cũ.
    */
   isSystemCreated?: boolean;
   source?: string | null;
@@ -177,10 +203,10 @@ interface Voucher {
 interface ToastMessage {
   id: string;
   type:
-    | "success"
-    | "warning"
-    | "info"
-    | "error";
+  | "success"
+  | "warning"
+  | "info"
+  | "error";
   title: string;
   message: string;
 }
@@ -213,7 +239,15 @@ interface ProductView extends Product {
 
   searchText: string;
 
-  // Voucher đang áp dụng riêng cho quán của món này.
+  /**
+   * Tất cả voucher đang áp dụng cho quán
+   * của sản phẩm này.
+   *
+   * Bao gồm:
+   *
+   * - targetType = ALL
+   * - targetType = MERCHANT
+   */
   merchantVouchers: Voucher[];
 }
 
@@ -472,6 +506,43 @@ const formatSoldCount = (
   return `${count}`;
 };
 
+/**
+ * ============================================================
+ * COMMISSION TIER
+ * ============================================================
+ */
+
+const normalizeCommissionTier = (
+  commissionPercent?: number | null,
+  explicitTier?: string | null
+): Exclude<CommissionTier, "ALL"> => {
+  if (
+    explicitTier ===
+    "PREMIUM"
+  ) {
+    return "PREMIUM";
+  }
+
+  if (
+    explicitTier ===
+    "STANDARD"
+  ) {
+    return "STANDARD";
+  }
+
+  return Number(
+    commissionPercent ?? 0
+  ) >= 20
+    ? "PREMIUM"
+    : "STANDARD";
+};
+
+/**
+ * ============================================================
+ * TRAVEL
+ * ============================================================
+ */
+
 const calculateTravelTime = (
   distanceKm: number
 ): number => {
@@ -509,6 +580,12 @@ const calculateETA = (
     ) + travelTime
   );
 };
+
+/**
+ * ============================================================
+ * DISTANCE
+ * ============================================================
+ */
 
 const calculateDistance = (
   lat1: number,
@@ -567,9 +644,9 @@ const calculateDistance = (
   const a =
     sinLat * sinLat +
     Math.cos(phi1) *
-      Math.cos(phi2) *
-      sinLng *
-      sinLng;
+    Math.cos(phi2) *
+    sinLng *
+    sinLng;
 
   const safeA = Math.min(
     1,
@@ -616,23 +693,8 @@ const calculateDistance = (
  * ============================================================
  * PROMOTION LOGIC
  * ============================================================
- *
- * Quy tắc:
- *
- * originalPrice > price
- * => sản phẩm đang có giá giảm.
- *
- * Không có start/end:
- * => giá giảm có hiệu lực.
- *
- * Có start/end:
- * => kiểm tra thời gian.
- *
- * discountStock không được dùng để biến:
- * 81.000 -> 90.000.
- *
- * Nó chỉ là thông tin giới hạn số lượng.
  */
+
 const getPromotionInfo = (
   product: Product,
   nowMs = Date.now()
@@ -665,20 +727,9 @@ const getPromotionInfo = (
 
   const hasSchedule = Boolean(
     product.discountStartTime ||
-      product.discountEndTime
+    product.discountEndTime
   );
 
-  /**
-   * Giá giảm không có lịch.
-   *
-   * Ví dụ:
-   *
-   * 90.000 -> 81.000
-   * start = null
-   * end = null
-   *
-   * => luôn hiển thị 81.000.
-   */
   if (!hasSchedule) {
     return {
       originalPrice,
@@ -692,22 +743,24 @@ const getPromotionInfo = (
         ((originalPrice -
           currentPrice) /
           originalPrice) *
-          100
+        100
       ),
     };
   }
 
-  const start = product.discountStartTime
-    ? new Date(
+  const start =
+    product.discountStartTime
+      ? new Date(
         product.discountStartTime
       ).getTime()
-    : -Infinity;
+      : -Infinity;
 
-  const end = product.discountEndTime
-    ? new Date(
+  const end =
+    product.discountEndTime
+      ? new Date(
         product.discountEndTime
       ).getTime()
-    : Infinity;
+      : Infinity;
 
   if (
     Number.isNaN(start) ||
@@ -752,11 +805,11 @@ const getPromotionInfo = (
 
     discountPercent: isActive
       ? Math.round(
-          ((originalPrice -
-            currentPrice) /
-            originalPrice) *
-            100
-        )
+        ((originalPrice -
+          currentPrice) /
+          originalPrice) *
+        100
+      )
       : 0,
   };
 };
@@ -777,32 +830,306 @@ const DEFAULT_SHOP_AVATAR =
  * ============================================================
  * MERCHANT VISIBILITY
  * ============================================================
- *
- * Chỉ merchant đã được hệ thống duyệt / kích hoạt mới được
- * xuất hiện trên sàn khách hàng.
- *
- * BLOCKED / PENDING / REJECTED / SUSPENDED / INACTIVE /
- * hoặc status rỗng đều bị ẩn.
- *
- * Việc dùng whitelist thay vì blacklist rất quan trọng:
- * nếu một merchant mới tạo chưa có status thì mặc định KHÔNG
- * được hiển thị cho khách.
  */
-const PUBLIC_MERCHANT_STATUSES = new Set([
-  "APPROVED",
-  "ACTIVE",
-]);
 
-const isMerchantVisible = (status: unknown): boolean => {
-  const normalizedStatus = String(
-    status ??
-      ""
-  )
-    .trim()
-    .toUpperCase();
+const PUBLIC_MERCHANT_STATUSES =
+  new Set([
+    "APPROVED",
+    "ACTIVE",
+  ]);
+
+const isMerchantVisible = (
+  status: unknown
+): boolean => {
+  const normalizedStatus =
+    String(
+      status ?? ""
+    )
+      .trim()
+      .toUpperCase();
 
   return PUBLIC_MERCHANT_STATUSES.has(
     normalizedStatus
+  );
+};
+
+/**
+ * ============================================================
+ * VOUCHER HELPERS
+ * ============================================================
+ */
+
+/**
+ * Kiểm tra voucher còn trong thời gian sử dụng.
+ */
+const isVoucherCurrentlyActive = (
+  voucher: Voucher,
+  now = Date.now()
+): boolean => {
+  if (
+    voucher.isActive ===
+    false
+  ) {
+    return false;
+  }
+
+  if (voucher.startDate) {
+    const start =
+      new Date(
+        voucher.startDate
+      ).getTime();
+
+    if (
+      Number.isFinite(start) &&
+      now < start
+    ) {
+      return false;
+    }
+  }
+
+  if (voucher.endDate) {
+    const end =
+      new Date(
+        voucher.endDate
+      ).getTime();
+
+    if (
+      Number.isFinite(end) &&
+      now > end
+    ) {
+      return false;
+    }
+  }
+
+  if (
+    voucher.usageLimit !==
+    null &&
+    voucher.usageLimit !==
+    undefined &&
+    Number(
+      voucher.usedCount || 0
+    ) >=
+    Number(
+      voucher.usageLimit
+    )
+  ) {
+    return false;
+  }
+
+  return true;
+};
+
+/**
+ * Voucher có áp dụng cho quán này hay không.
+ *
+ * Điều quan trọng:
+ *
+ * targetType = ALL
+ * ----------------
+ * merchantId null vẫn hợp lệ.
+ *
+ * Sau đó kiểm tra:
+ * eligibleCommissionTier
+ *
+ * Ví dụ:
+ *
+ * voucher:
+ * STANDARD
+ *
+ * shop:
+ * commissionPercent = 15
+ *
+ * => HỢP LỆ.
+ *
+ * voucher:
+ * PREMIUM
+ *
+ * shop:
+ * commissionPercent = 15
+ *
+ * => KHÔNG HỢP LỆ.
+ */
+const isVoucherApplicableToShop = (
+  voucher: Voucher,
+  shop: Shop
+): boolean => {
+  if (
+    !isVoucherCurrentlyActive(
+      voucher
+    )
+  ) {
+    return false;
+  }
+
+  /**
+   * ----------------------------------------------------------
+   * TARGET
+   * ----------------------------------------------------------
+   */
+
+  const targetType =
+    voucher.targetType ||
+    (
+      voucher.merchantId
+        ? "MERCHANT"
+        : "ALL"
+    );
+
+  if (
+    targetType ===
+    "MERCHANT"
+  ) {
+    const merchantIdMatch =
+      Boolean(
+        voucher.merchantId &&
+        voucher.merchantId ===
+        shop.id
+      );
+
+    const merchantCodeMatch =
+      Boolean(
+        voucher.merchantCode &&
+        voucher.merchantCode ===
+        shop.merchantCode
+      );
+
+    if (
+      !merchantIdMatch &&
+      !merchantCodeMatch
+    ) {
+      return false;
+    }
+  }
+
+  /**
+   * ----------------------------------------------------------
+   * COMMISSION TIER
+   * ----------------------------------------------------------
+   */
+
+  const voucherTier =
+    voucher.eligibleCommissionTier ||
+    "ALL";
+
+  const shopTier =
+    normalizeCommissionTier(
+      shop.commissionPercent
+    );
+
+  if (
+    voucherTier !==
+    "ALL" &&
+    voucherTier !==
+    shopTier
+  ) {
+    return false;
+  }
+
+  return true;
+};
+
+/**
+ * Text lợi ích voucher.
+ */
+const getVoucherBenefitText = (
+  voucher: Voucher,
+  formatCurrency: (
+    amount: number
+  ) => string
+): string => {
+  if (
+    voucher.applyType ===
+    "SHIPPING"
+  ) {
+    if (
+      voucher.discountType ===
+      "PERCENTAGE"
+    ) {
+      if (
+        Number(
+          voucher.discountValue
+        ) >= 100
+      ) {
+        return "FREESHIP 100%";
+      }
+
+      return `Giảm ${voucher.discountValue}% phí ship`;
+    }
+
+    return `Giảm ${formatCurrency(
+      voucher.discountValue
+    )} phí ship`;
+  }
+
+  if (
+    voucher.discountType ===
+    "PERCENTAGE"
+  ) {
+    return `Giảm ${voucher.discountValue}% đơn`;
+  }
+
+  return `Giảm ${formatCurrency(
+    voucher.discountValue
+  )}`;
+};
+
+/**
+ * Text điều kiện voucher.
+ *
+ * Ví dụ:
+ *
+ * Đơn từ 70.000đ
+ * Tối đa 14.000đ
+ */
+const getVoucherConditionText = (
+  voucher: Voucher,
+  formatCurrency: (
+    amount: number
+  ) => string
+): string => {
+  const parts: string[] =
+    [];
+
+  if (
+    voucher.minOrder !==
+    null &&
+    voucher.minOrder !==
+    undefined &&
+    Number(
+      voucher.minOrder
+    ) > 0
+  ) {
+    parts.push(
+      `Đơn từ ${formatCurrency(
+        Number(
+          voucher.minOrder
+        )
+      )}`
+    );
+  }
+
+  if (
+    voucher.maxDiscount !==
+    null &&
+    voucher.maxDiscount !==
+    undefined &&
+    Number(
+      voucher.maxDiscount
+    ) > 0 &&
+    voucher.discountType ===
+    "PERCENTAGE"
+  ) {
+    parts.push(
+      `Tối đa ${formatCurrency(
+        Number(
+          voucher.maxDiscount
+        )
+      )}`
+    );
+  }
+
+  return parts.join(
+    " • "
   );
 };
 
@@ -938,11 +1265,8 @@ export default function HomePage() {
    * ==========================================================
    * CART SELECTORS
    * ==========================================================
-   *
-   * Không subscribe cả store.
-   *
-   * Chỉ subscribe đúng items / actions.
    */
+
   const cartItems = useCartStore(
     (state) => state.items
   );
@@ -957,19 +1281,14 @@ export default function HomePage() {
       (state) => state.openCart
     );
 
-  /**
-   * Không dùng getTotalItems() ở đây.
-   *
-   * Đếm trực tiếp từ items.
-   */
   const totalCartCount = useMemo(
     () =>
       isMounted
         ? cartItems.reduce(
-            (sum, item) =>
-              sum + item.quantity,
-            0
-          )
+          (sum, item) =>
+            sum + item.quantity,
+          0
+        )
         : 0,
     [cartItems, isMounted]
   );
@@ -1151,7 +1470,7 @@ export default function HomePage() {
 
           if (
             currentScrollY >
-              lastScrollY.current &&
+            lastScrollY.current &&
             currentScrollY > 80
           ) {
             setShowNavbar(false);
@@ -1420,13 +1739,17 @@ export default function HomePage() {
 
   /**
    * ==========================================================
-   * VOUCHERS
+   * SAVE VOUCHER
    * ==========================================================
    */
 
   const handleSaveVoucher =
     useCallback(
       (code: string) => {
+        if (!code) {
+          return;
+        }
+
         setSavedVouchers(
           (prev) => {
             const exists =
@@ -1435,9 +1758,9 @@ export default function HomePage() {
             const updated =
               exists
                 ? prev.filter(
-                    (item) =>
-                      item !== code
-                  )
+                  (item) =>
+                    item !== code
+                )
                 : [...prev, code];
 
             localStorage.setItem(
@@ -1546,10 +1869,11 @@ export default function HomePage() {
     );
 
   /**
-   * Geocode customer address.
-   *
-   * Chỉ chạy sau 800ms khi người dùng ngừng nhập.
+   * ==========================================================
+   * GEOCODE CUSTOMER
+   * ==========================================================
    */
+
   useEffect(() => {
     const address =
       userInfo.address?.trim();
@@ -1575,15 +1899,11 @@ export default function HomePage() {
 
           setUserInfo(
             (prev) => {
-              /**
-               * Tránh setState nếu tọa độ
-               * thực tế không thay đổi.
-               */
               if (
                 prev.lat ===
-                  coords.lat &&
+                coords.lat &&
                 prev.lng ===
-                  coords.lng
+                coords.lng
               ) {
                 return prev;
               }
@@ -1691,8 +2011,8 @@ export default function HomePage() {
               const rating =
                 Number(
                   data.productRating ||
-                    data.rating ||
-                    0
+                  data.rating ||
+                  0
                 );
 
               if (
@@ -1718,7 +2038,7 @@ export default function HomePage() {
 
               if (
                 !shopReviewStats[
-                  key
+                key
                 ]
               ) {
                 shopReviewStats[
@@ -1743,11 +2063,6 @@ export default function HomePage() {
           /**
            * ====================================================
            * SHOPS
-           * ====================================================
-           *
-           * Tạo thêm merchantCodeMap
-           * để không phải Object.keys().find()
-           * cho từng product.
            * ====================================================
            */
 
@@ -1777,14 +2092,14 @@ export default function HomePage() {
               const categoryText =
                 String(
                   businessCategory ||
-                    ""
+                  ""
                 ).toLowerCase();
 
               const isFnb =
                 businessCategory ===
-                  "F&B" ||
+                "F&B" ||
                 businessCategory ===
-                  "FNB" ||
+                "FNB" ||
                 categoryText.includes(
                   "f&b"
                 ) ||
@@ -1796,38 +2111,35 @@ export default function HomePage() {
                 return;
               }
 
-              /**
-               * ==================================================
-               * QUAN TRỌNG: KIỂM TRA TRẠNG THÁI MERCHANT
-               * ==================================================
-               *
-               * Merchant BLOCKED / PENDING / REJECTED hoặc
-               * bất kỳ trạng thái nào không nằm trong whitelist
-               * sẽ không được đưa vào shopMap.
-               *
-               * Vì products chỉ được ghép với merchant có trong
-               * shopMap nên toàn bộ sản phẩm của merchant này
-               * cũng tự động bị loại khỏi sàn.
-               */
-              const merchantStatus = String(
-                data.status ??
+              const merchantStatus =
+                String(
+                  data.status ??
                   ""
-              )
-                .trim()
-                .toUpperCase();
+                )
+                  .trim()
+                  .toUpperCase();
 
-              if (!isMerchantVisible(merchantStatus)) {
+              if (
+                !isMerchantVisible(
+                  merchantStatus
+                )
+              ) {
                 console.log(
                   "🚫 [MARKETPLACE] Ẩn merchant không đủ điều kiện:",
                   {
-                    merchantId: docSnap.id,
-                    merchantCode: data.merchantCode || "",
+                    merchantId:
+                      docSnap.id,
+                    merchantCode:
+                      data.merchantCode ||
+                      "",
                     shopName:
                       data.shopName ||
                       data.storeName ||
                       data.name ||
                       "",
-                    status: merchantStatus || "EMPTY",
+                    status:
+                      merchantStatus ||
+                      "EMPTY",
                   }
                 );
 
@@ -1860,131 +2172,132 @@ export default function HomePage() {
               const merchantCode =
                 String(
                   data.merchantCode ||
-                    ""
+                  ""
                 );
 
               const stats =
                 shopReviewStats[
-                  docSnap.id
+                docSnap.id
                 ] ||
                 (merchantCode
                   ? shopReviewStats[
-                      merchantCode
-                    ]
+                  merchantCode
+                  ]
                   : null);
 
               let rating =
                 Number(
                   data.rating ||
-                    5
+                  5
                 );
 
               let reviewCount =
                 Number(
                   data.reviewCount ||
-                    0
+                  0
                 );
 
               if (
                 stats &&
                 stats.count > 0
               ) {
-                rating = Number(
-                  (
-                    stats.totalRating /
-                    stats.count
-                  ).toFixed(1)
-                );
+                rating =
+                  Number(
+                    (
+                      stats.totalRating /
+                      stats.count
+                    ).toFixed(1)
+                  );
 
                 reviewCount =
                   stats.count;
               }
 
               const shop: Shop =
-                {
-                  id: docSnap.id,
+              {
+                id: docSnap.id,
 
-                  merchantCode,
+                merchantCode,
 
-                  status:
-                    merchantStatus,
+                status:
+                  merchantStatus,
 
-                  name:
-                    data.shopName ||
-                    data.storeName ||
-                    data.fullName ||
-                    data.name ||
-                    "Quán Ăn ngon",
+                name:
+                  data.shopName ||
+                  data.storeName ||
+                  data.fullName ||
+                  data.name ||
+                  "Quán Ăn ngon",
 
-                  avatar:
-                    typeof data.avatar ===
-                      "string" &&
+                avatar:
+                  typeof data.avatar ===
+                    "string" &&
                     data.avatar.trim()
-                      ? data.avatar
-                      : typeof data.avatarUrl ===
-                          "string" &&
-                        data.avatarUrl.trim()
+                    ? data.avatar
+                    : typeof data.avatarUrl ===
+                      "string" &&
+                      data.avatarUrl.trim()
                       ? data.avatarUrl
                       : DEFAULT_SHOP_AVATAR,
 
-                  rating,
+                rating,
 
-                  reviewCount,
+                reviewCount,
 
-                  distance:
-                    data.distance ||
-                    "2.0 km",
+                distance:
+                  data.distance ||
+                  "2.0 km",
 
-                  location:
-                    typeof rawAddress ===
+                location:
+                  typeof rawAddress ===
                     "string"
-                      ? rawAddress
-                      : "Hà Tĩnh",
+                    ? rawAddress
+                    : "Hà Tĩnh",
 
-                  address:
-                    typeof rawAddress ===
+                address:
+                  typeof rawAddress ===
                     "string"
-                      ? rawAddress
-                      : "Hà Tĩnh",
+                    ? rawAddress
+                    : "Hà Tĩnh",
 
-                  storeAddress:
-                    typeof rawAddress ===
+                storeAddress:
+                  typeof rawAddress ===
                     "string"
-                      ? rawAddress
-                      : "Hà Tĩnh",
+                    ? rawAddress
+                    : "Hà Tĩnh",
 
-                  lat:
-                    lat !== null
-                      ? Number(lat)
-                      : null,
+                lat:
+                  lat !== null
+                    ? Number(lat)
+                    : null,
 
-                  lng:
-                    lng !== null
-                      ? Number(lng)
-                      : null,
+                lng:
+                  lng !== null
+                    ? Number(lng)
+                    : null,
 
-                  isOpen:
-                    data.isOpen !==
+                isOpen:
+                  data.isOpen !==
                     undefined
-                      ? Boolean(
-                          data.isOpen
-                        )
-                      : true,
+                    ? Boolean(
+                      data.isOpen
+                    )
+                    : true,
 
-                  openTime:
-                    data.openTime ||
-                    "00:00",
+                openTime:
+                  data.openTime ||
+                  "00:00",
 
-                  closeTime:
-                    data.closeTime ||
-                    "23:00",
+                closeTime:
+                  data.closeTime ||
+                  "23:00",
 
-                  commissionPercent:
-                    Number(
-                      data.commissionPercent ??
-                        0
-                    ) || 0,
-                };
+                commissionPercent:
+                  Number(
+                    data.commissionPercent ??
+                    0
+                  ) || 0,
+              };
 
               shopMap[
                 docSnap.id
@@ -2002,7 +2315,7 @@ export default function HomePage() {
                 (lat === null ||
                   lng === null) &&
                 typeof rawAddress ===
-                  "string" &&
+                "string" &&
                 rawAddress
               ) {
                 coordsToFetch[
@@ -2028,19 +2341,16 @@ export default function HomePage() {
 
               const isAvailable =
                 data.isAvailable !==
-                undefined
+                  undefined
                   ? Boolean(
-                      data.isAvailable
-                    )
+                    data.isAvailable
+                  )
                   : true;
 
               if (!isAvailable) {
                 return;
               }
 
-              /**
-               * Chỉ F&B.
-               */
               if (
                 data.isConsumerGood !==
                 false
@@ -2051,25 +2361,21 @@ export default function HomePage() {
               const rawShopId =
                 String(
                   data.shopId ||
-                    data.merchantId ||
-                    ""
+                  data.merchantId ||
+                  ""
                 );
 
-              /**
-               * Ưu tiên shopId.
-               * Nếu không có thì tìm bằng merchantCode.
-               */
               const matchedShopKey =
                 shopMap[
                   rawShopId
                 ]
                   ? rawShopId
                   : shopCodeMap[
-                      String(
-                        data.merchantCode ||
-                          ""
-                      )
-                    ];
+                  String(
+                    data.merchantCode ||
+                    ""
+                  )
+                  ];
 
               if (
                 !matchedShopKey
@@ -2079,30 +2385,18 @@ export default function HomePage() {
 
               const matchedShop =
                 shopMap[
-                  matchedShopKey
+                matchedShopKey
                 ];
 
               if (!matchedShop) {
                 return;
               }
 
-              /**
-               * Bảo vệ tầng PRODUCT một lần nữa.
-               * Nếu dữ liệu merchant bị thay đổi bất thường hoặc
-               * có product cũ trỏ tới merchant không còn hợp lệ,
-               * sản phẩm vẫn không được lọt ra giao diện.
-               */
-              if (!isMerchantVisible(matchedShop.status)) {
-                console.warn(
-                  "🚫 [MARKETPLACE] Bỏ qua product của merchant không hợp lệ:",
-                  {
-                    productId: docSnap.id,
-                    merchantId: matchedShop.id,
-                    merchantCode: matchedShop.merchantCode || "",
-                    merchantStatus: matchedShop.status,
-                  }
-                );
-
+              if (
+                !isMerchantVisible(
+                  matchedShop.status
+                )
+              ) {
                 return;
               }
 
@@ -2110,24 +2404,24 @@ export default function HomePage() {
                 Array.isArray(
                   data.imageUrls
                 ) &&
-                data.imageUrls.length >
+                  data.imageUrls.length >
                   0
                   ? data.imageUrls.filter(
-                      (
-                        image: unknown
-                      ): image is string =>
-                        typeof image ===
-                        "string"
-                    )
+                    (
+                      image: unknown
+                    ): image is string =>
+                      typeof image ===
+                      "string"
+                  )
                   : [];
 
               const normalizedImages =
                 images.length > 0
                   ? images
                   : [
-                      data.imageUrl ||
-                        DEFAULT_PRODUCT_IMAGE,
-                    ];
+                    data.imageUrl ||
+                    DEFAULT_PRODUCT_IMAGE,
+                  ];
 
               const price =
                 Number(
@@ -2139,14 +2433,9 @@ export default function HomePage() {
                   data.originalPrice
                 ) || price;
 
-              /**
-               * originalPrice luôn >= price.
-               *
-               * Nhưng KHÔNG thay price.
-               */
               const originalPrice =
                 rawOriginalPrice >
-                price
+                  price
                   ? rawOriginalPrice
                   : price;
 
@@ -2192,16 +2481,8 @@ export default function HomePage() {
                   data.description ||
                   "",
 
-                /**
-                 * QUAN TRỌNG:
-                 *
-                 * price = giá bán hiện tại.
-                 */
                 price,
 
-                /**
-                 * originalPrice = giá gốc.
-                 */
                 originalPrice,
 
                 discountStock:
@@ -2211,11 +2492,11 @@ export default function HomePage() {
                 maxPerUser:
                   data.maxPerUser !==
                     undefined &&
-                  data.maxPerUser !==
+                    data.maxPerUser !==
                     null
                     ? Number(
-                        data.maxPerUser
-                      )
+                      data.maxPerUser
+                    )
                     : null,
 
                 discountStartTime:
@@ -2234,16 +2515,16 @@ export default function HomePage() {
 
                 soldCount: Number(
                   data.soldCount ||
-                    data.sold ||
-                    data.totalSold ||
-                    0
+                  data.sold ||
+                  data.totalSold ||
+                  0
                 ),
 
                 reviewCount:
                   productReviews.length ||
                   Number(
                     data.reviewCount ||
-                      0
+                    0
                   ),
 
                 discountBadge:
@@ -2267,7 +2548,7 @@ export default function HomePage() {
                 isFavorite:
                   Boolean(
                     data.isFeatured ||
-                      data.isFavorite
+                    data.isFavorite
                   ),
 
                 isAvailable: true,
@@ -2292,71 +2573,105 @@ export default function HomePage() {
               const data =
                 docSnap.data();
 
+              const targetType =
+                data.targetType ===
+                  "MERCHANT"
+                  ? "MERCHANT"
+                  : "ALL";
+
+              const explicitTier =
+                data.eligibleCommissionTier ===
+                  "STANDARD" ||
+                  data.eligibleCommissionTier ===
+                  "PREMIUM" ||
+                  data.eligibleCommissionTier ===
+                  "ALL"
+                  ? data.eligibleCommissionTier
+                  : undefined;
+
               fetchedVouchers.push({
                 id: docSnap.id,
 
                 code:
-                  data.code || "",
+                  String(
+                    data.code || ""
+                  ),
 
                 title:
-                  data.title || "",
+                  String(
+                    data.title || ""
+                  ),
 
                 description:
-                  data.description ||
-                  "",
+                  String(
+                    data.description ||
+                    ""
+                  ),
 
                 applyType:
                   data.applyType ===
-                  "SHIPPING"
+                    "SHIPPING"
                     ? "SHIPPING"
                     : "ORDER",
 
                 discountType:
                   data.discountType ===
-                  "PERCENTAGE"
+                    "PERCENTAGE"
                     ? "PERCENTAGE"
                     : "FIXED",
 
                 discountValue:
                   Number(
                     data.discountValue ||
-                      0
+                    0
                   ),
 
                 maxDiscount:
                   data.maxDiscount !==
                     undefined &&
-                  data.maxDiscount !==
-                    null
+                    data.maxDiscount !==
+                    null &&
+                    data.maxDiscount !==
+                    ""
                     ? Number(
-                        data.maxDiscount
-                      )
+                      data.maxDiscount
+                    )
                     : null,
 
                 minOrder:
                   data.minOrder !==
                     undefined &&
-                  data.minOrder !==
-                    null
+                    data.minOrder !==
+                    null &&
+                    data.minOrder !==
+                    ""
                     ? Number(
-                        data.minOrder
-                      )
+                      data.minOrder
+                    )
                     : null,
 
                 usageLimit:
                   data.usageLimit !==
                     undefined &&
-                  data.usageLimit !==
-                    null
+                    data.usageLimit !==
+                    null &&
+                    data.usageLimit !==
+                    ""
                     ? Number(
-                        data.usageLimit
-                      )
+                      data.usageLimit
+                    )
                     : null,
 
-                usedCount: Number(
-                  data.usedCount ||
-                    0
-                ),
+                usedCount:
+                  Number(
+                    data.usedCount || 0
+                  ),
+
+                limitPerUser:
+                  Number(
+                    data.limitPerUser ||
+                    1
+                  ),
 
                 startDate:
                   data.startDate ??
@@ -2370,17 +2685,7 @@ export default function HomePage() {
                   data.isActive !==
                   false,
 
-                // -------------------------------------------
-                // TARGET SHOP
-                // -------------------------------------------
-
-                targetType:
-                  data.targetType ===
-                  "MERCHANT"
-                    ? "MERCHANT"
-                    : data.merchantId
-                    ? "MERCHANT"
-                    : "ALL",
+                targetType,
 
                 merchantId:
                   data.merchantId ||
@@ -2397,11 +2702,60 @@ export default function HomePage() {
                 merchantCommissionPercent:
                   data.merchantCommissionPercent !==
                     undefined &&
-                  data.merchantCommissionPercent !==
+                    data.merchantCommissionPercent !==
                     null
                     ? Number(
-                        data.merchantCommissionPercent
-                      )
+                      data.merchantCommissionPercent
+                    )
+                    : null,
+
+                eligibleCommissionTier:
+                  explicitTier ||
+                  "ALL",
+
+                fundingType:
+                  data.fundingType ===
+                    "MERCHANT"
+                    ? "MERCHANT"
+                    : data.fundingType ===
+                      "SHARED"
+                      ? "SHARED"
+                      : "PLATFORM",
+
+                platformFundingPercent:
+                  data.platformFundingPercent !==
+                    undefined &&
+                    data.platformFundingPercent !==
+                    null
+                    ? Number(
+                      data.platformFundingPercent
+                    )
+                    : null,
+
+                merchantFundingPercent:
+                  data.merchantFundingPercent !==
+                    undefined &&
+                    data.merchantFundingPercent !==
+                    null
+                    ? Number(
+                      data.merchantFundingPercent
+                    )
+                    : null,
+
+                campaignType:
+                  data.campaignType ===
+                    "WELCOME" ||
+                    data.campaignType ===
+                    "FREESHIP" ||
+                    data.campaignType ===
+                    "ORDER_DISCOUNT" ||
+                    data.campaignType ===
+                    "WEEKEND" ||
+                    data.campaignType ===
+                    "FLASH_SALE" ||
+                    data.campaignType ===
+                    "PREMIUM"
+                    ? data.campaignType
                     : null,
 
                 source:
@@ -2420,28 +2774,28 @@ export default function HomePage() {
                   null,
 
                 isSystemCreated:
-                  data.isSystemCreated === true ||
+                  data.isSystemCreated ===
+                  true ||
                   String(
                     data.source ??
-                      data.createdSource ??
-                      data.createdByRole ??
-                      data.creatorRole ??
-                      data.createdByType ??
-                      data.creatorType ??
-                      ""
+                    data.createdSource ??
+                    data.createdByRole ??
+                    data.creatorRole ??
+                    data.createdByType ??
+                    data.creatorType ??
+                    ""
                   ).toUpperCase() ===
-                    "SYSTEM" ||
+                  "SYSTEM" ||
                   String(
                     data.createdBy ??
-                      ""
+                    ""
                   ).toUpperCase() ===
-                    "SYSTEM" ||
+                  "SYSTEM" ||
                   (Boolean(
                     data.merchantCommissionPercent
                   ) &&
-                    (data.targetType ===
-                      "MERCHANT" ||
-                      Boolean(data.merchantId))),
+                    targetType ===
+                    "MERCHANT"),
               });
             }
           );
@@ -2450,13 +2804,14 @@ export default function HomePage() {
             return;
           }
 
-          /**
-           * Chỉ setState một lần cho dữ liệu chính.
-           */
-          setShops(shopMap);
+          setShops(
+            shopMap
+          );
+
           setProducts(
             fetchedProducts
           );
+
           setVouchers(
             fetchedVouchers
           );
@@ -2465,10 +2820,8 @@ export default function HomePage() {
            * ==================================================
            * GEOCODE SHOPS
            * ==================================================
-           *
-           * Geocode song song.
-           * Chỉ setState MỘT LẦN.
            */
+
           if (
             Object.keys(
               coordsToFetch
@@ -2649,197 +3002,247 @@ export default function HomePage() {
 
   /**
    * ==========================================================
-   * FEATURED HIGH-COMMISSION SHOPS
+   * FEATURED SHOPS
    * ==========================================================
-   *
-   * Đây là quyền lợi hiển thị dành cho các quán có mức
-   * commission từ 15% trở lên.
-   * Không hiển thị % chiết khấu cho khách hàng.
    */
 
   const HIGH_COMMISSION_THRESHOLD = 15;
 
-  const featuredShops = useMemo(() => {
-    return Object.values(shops)
-      .filter(
-        (shop) =>
-          Number(
-            shop.commissionPercent ?? 0
-          ) >= HIGH_COMMISSION_THRESHOLD
+  const featuredShops =
+    useMemo(() => {
+      return Object.values(
+        shops
       )
-      .sort((a, b) => {
-        const commissionDiff =
-          Number(b.commissionPercent ?? 0) -
-          Number(a.commissionPercent ?? 0);
+        .filter(
+          (shop) =>
+            Number(
+              shop.commissionPercent ??
+              0
+            ) >=
+            HIGH_COMMISSION_THRESHOLD
+        )
+        .sort((a, b) => {
+          const commissionDiff =
+            Number(
+              b.commissionPercent ??
+              0
+            ) -
+            Number(
+              a.commissionPercent ??
+              0
+            );
 
-        if (commissionDiff !== 0) {
-          return commissionDiff;
-        }
+          if (
+            commissionDiff !== 0
+          ) {
+            return commissionDiff;
+          }
 
-        const ratingDiff =
-          Number(b.rating ?? 0) -
-          Number(a.rating ?? 0);
+          const ratingDiff =
+            Number(
+              b.rating ?? 0
+            ) -
+            Number(
+              a.rating ?? 0
+            );
 
-        if (ratingDiff !== 0) {
-          return ratingDiff;
-        }
+          if (
+            ratingDiff !== 0
+          ) {
+            return ratingDiff;
+          }
 
-        return 0;
-      })
-      .slice(0, 8);
-  }, [shops]);
+          return 0;
+        })
+        .slice(0, 8);
+    }, [shops]);
 
   /**
    * ==========================================================
-   * MERCHANT VOUCHER MAP
+   * APPLICABLE VOUCHER MAP
    * ==========================================================
    *
-   * Chỉ lấy voucher:
-   * - đang hoạt động
-   * - trong thời gian hiệu lực
-   * - chưa dùng hết lượt
-   * - có merchantId
-   * - là voucher do hệ thống tạo riêng cho merchant
+   * ĐÂY LÀ PHẦN QUAN TRỌNG NHẤT.
    *
-   * Map theo cả merchantId và merchantCode để tương thích
-   * với dữ liệu sản phẩm cũ.
+   * Voucher targetType = ALL:
+   *
+   * merchantId = null
+   * merchantCode = null
+   *
+   * vẫn được áp dụng cho quán.
+   *
+   * Điều kiện tiếp theo:
+   *
+   * - Đang active
+   * - Trong thời gian
+   * - Chưa hết usage
+   * - Đúng Standard/Premium
+   *
+   * Voucher MERCHANT:
+   *
+   * - merchantId hoặc merchantCode phải trùng
+   *
+   * Ví dụ data:
+   *
+   * DOITACDACBIET
+   * targetType = ALL
+   * eligibleCommissionTier = STANDARD
+   * applyType = SHIPPING
+   * discountValue = 100
+   * minOrder = 70000
+   * maxDiscount = 14000
+   *
+   * => xuất hiện trên sản phẩm của quán STANDARD.
    */
 
-  const merchantVoucherMap =
+  const applicableVoucherMap =
     useMemo(() => {
       const map: Record<
         string,
         Voucher[]
       > = {};
 
-      const now = Date.now();
+      const now =
+        Date.now();
 
-      vouchers.forEach((voucher) => {
-        if (voucher.isActive === false) {
-          return;
-        }
+      Object.values(
+        shops
+      ).forEach((shop) => {
+        const applicable =
+          vouchers.filter(
+            (voucher) =>
+              isVoucherApplicableToShop(
+                voucher,
+                shop
+              )
+          );
 
-        if (
-          voucher.targetType !==
-            "MERCHANT" ||
-          !voucher.merchantId ||
-          voucher.isSystemCreated !== true
-        ) {
-          return;
-        }
+        /**
+         * Ưu tiên:
+         *
+         * 1. SHIPPING
+         * 2. FREESHIP / campaign
+         * 3. Voucher có giá trị cao
+         * 4. Voucher có minOrder thấp hơn
+         */
 
-        // Chưa tới thời gian bắt đầu
-        if (voucher.startDate) {
-          const start = new Date(
-            voucher.startDate
-          ).getTime();
-
-          if (
-            Number.isFinite(start) &&
-            now < start
-          ) {
-            return;
-          }
-        }
-
-        // Đã hết hạn
-        if (voucher.endDate) {
-          const end = new Date(
-            voucher.endDate
-          ).getTime();
-
-          if (
-            Number.isFinite(end) &&
-            now > end
-          ) {
-            return;
-          }
-        }
-
-        // Đã dùng hết voucher
-        if (
-          voucher.usageLimit !==
-            null &&
-          voucher.usageLimit !==
-            undefined &&
-          Number(voucher.usedCount || 0) >=
-            Number(voucher.usageLimit)
-        ) {
-          return;
-        }
-
-        const keys = [
-          voucher.merchantId,
-          voucher.merchantCode,
-        ].filter(
-          (value): value is string =>
-            Boolean(value)
-        );
-
-        keys.forEach((key) => {
-          if (!map[key]) {
-            map[key] = [];
-          }
-
-          // Tránh push trùng cùng một voucher
-          if (
-            !map[key].some(
-              (item) =>
-                item.id ===
-                voucher.id
-            )
-          ) {
-            map[key].push(voucher);
-          }
-        });
-      });
-
-      // Voucher shipping được ưu tiên hiển thị trước
-      Object.values(map).forEach(
-        (list) => {
-          list.sort((a, b) => {
-            if (
+        applicable.sort(
+          (a, b) => {
+            const shippingA =
               a.applyType ===
-                "SHIPPING" &&
-              b.applyType !==
                 "SHIPPING"
-            ) {
-              return -1;
-            }
+                ? 1
+                : 0;
 
-            if (
-              a.applyType !==
-                "SHIPPING" &&
+            const shippingB =
               b.applyType ===
                 "SHIPPING"
+                ? 1
+                : 0;
+
+            if (
+              shippingA !==
+              shippingB
             ) {
-              return 1;
+              return (
+                shippingB -
+                shippingA
+              );
             }
 
+            const freeShipA =
+              a.applyType ===
+                "SHIPPING" &&
+                a.discountType ===
+                "PERCENTAGE" &&
+                Number(
+                  a.discountValue
+                ) >= 100
+                ? 1
+                : 0;
+
+            const freeShipB =
+              b.applyType ===
+                "SHIPPING" &&
+                b.discountType ===
+                "PERCENTAGE" &&
+                Number(
+                  b.discountValue
+                ) >= 100
+                ? 1
+                : 0;
+
+            if (
+              freeShipA !==
+              freeShipB
+            ) {
+              return (
+                freeShipB -
+                freeShipA
+              );
+            }
+
+            const valueDiff =
+              Number(
+                b.discountValue ||
+                0
+              ) -
+              Number(
+                a.discountValue ||
+                0
+              );
+
+            if (
+              valueDiff !==
+              0
+            ) {
+              return valueDiff;
+            }
+
+            const minOrderA =
+              Number(
+                a.minOrder ?? 0
+              );
+
+            const minOrderB =
+              Number(
+                b.minOrder ?? 0
+              );
+
             return (
-              b.discountValue -
-              a.discountValue
+              minOrderA -
+              minOrderB
             );
-          });
+          }
+        );
+
+        if (
+          applicable.length >
+          0
+        ) {
+          map[
+            shop.id
+          ] = applicable;
         }
-      );
+      });
+
+      /**
+       * Không dùng now trực tiếp ngoài
+       * việc giữ cho useMemo phụ thuộc logic
+       * hiện tại.
+       */
+      void now;
 
       return map;
-    }, [vouchers]);
+    }, [
+      shops,
+      vouchers,
+    ]);
 
   /**
    * ==========================================================
    * PRODUCT VIEW MODEL
    * ==========================================================
-   *
-   * Toàn bộ:
-   * - promotion
-   * - merchant vouchers
-   * - distance
-   * - ETA
-   * - search text
-   *
-   * được tính MỘT LẦN.
    */
 
   const productViews =
@@ -2848,19 +3251,21 @@ export default function HomePage() {
         Date.now();
 
       const visibleProducts =
-        products.filter((product) => {
-          const shop =
-            shops[
+        products.filter(
+          (product) => {
+            const shop =
+              shops[
               product.shopId
-            ];
+              ];
 
-          return (
-            Boolean(shop) &&
-            isMerchantVisible(
-              shop?.status
-            )
-          );
-        });
+            return (
+              Boolean(shop) &&
+              isMerchantVisible(
+                shop?.status
+              )
+            );
+          }
+        );
 
       return visibleProducts.map(
         (product) => {
@@ -2872,7 +3277,7 @@ export default function HomePage() {
 
           const distance =
             calculatedDistances[
-              product.shopId
+            product.shopId
             ] ?? {
               text: "2.0 km",
               km: 2,
@@ -2881,7 +3286,7 @@ export default function HomePage() {
           const estimatedDeliveryTime =
             calculateETA(
               product.prepTime ||
-                15,
+              15,
               distance.km
             );
 
@@ -2889,40 +3294,21 @@ export default function HomePage() {
             `${product.name} ${product.description} ${product.shopName} ${product.category}`
               .toLowerCase();
 
-          const voucherKeys = [
-            product.merchantId,
-            product.shopId,
-            product.merchantCode,
-          ].filter(
-            (value): value is string =>
-              Boolean(value)
-          );
+          /**
+           * --------------------------------------------------
+           * VOUCHERS CỦA SHOP
+           * --------------------------------------------------
+           *
+           * Không còn chỉ lấy MERCHANT voucher.
+           *
+           * Voucher targetType = ALL cũng được
+           * map vào đúng shop.
+           */
 
-          const merchantVouchers: Voucher[] =
-            [];
-
-          voucherKeys.forEach((key) => {
-            const list =
-              merchantVoucherMap[key];
-
-            if (!list) {
-              return;
-            }
-
-            list.forEach((voucher) => {
-              if (
-                !merchantVouchers.some(
-                  (item) =>
-                    item.id ===
-                    voucher.id
-                )
-              ) {
-                merchantVouchers.push(
-                  voucher
-                );
-              }
-            });
-          });
+          const merchantVouchers =
+            applicableVoucherMap[
+            product.shopId
+            ] || [];
 
           return {
             ...product,
@@ -2946,7 +3332,8 @@ export default function HomePage() {
     }, [
       products,
       calculatedDistances,
-      merchantVoucherMap,
+      applicableVoucherMap,
+      shops,
     ]);
 
   /**
@@ -2987,10 +3374,6 @@ export default function HomePage() {
     };
   }, [productViews]);
 
-  /**
-   * Nếu không có Flash Deal active
-   * nhưng có upcoming -> mở tab upcoming.
-   */
   useEffect(() => {
     if (
       activeDeals.length === 0 &&
@@ -3002,6 +3385,30 @@ export default function HomePage() {
     activeDeals.length,
     upcomingDeals.length,
   ]);
+
+
+  const getVoucherBenefitText = (
+    voucher: Voucher,
+    formatCurrency: (value: number) => string
+  ) => {
+    if (voucher.applyType === "SHIPPING") {
+      if (voucher.discountType === "PERCENTAGE") {
+        return `Giảm ${voucher.discountValue}% chi phí vận chuyển`;
+      }
+
+      return `Giảm ${formatCurrency(
+        Number(voucher.discountValue || 0)
+      )} phí vận chuyển`;
+    }
+
+    if (voucher.discountType === "PERCENTAGE") {
+      return `Giảm ${voucher.discountValue}% đơn hàng`;
+    }
+
+    return `Giảm ${formatCurrency(
+      Number(voucher.discountValue || 0)
+    )} đơn hàng`;
+  };
 
   /**
    * ==========================================================
@@ -3018,7 +3425,7 @@ export default function HomePage() {
         (product) => {
           const shop =
             shops[
-              product.shopId
+            product.shopId
             ];
 
           const rating =
@@ -3029,7 +3436,7 @@ export default function HomePage() {
               0,
               (10 -
                 product.distanceKm) *
-                10
+              10
             );
 
           const ratingScore =
@@ -3039,15 +3446,21 @@ export default function HomePage() {
             Math.min(
               100,
               product.soldCount *
-                0.5
+              0.5
             );
 
           const promoScore =
             product.promotion
               .isDiscountActive
               ? product.promotion
-                  .discountPercent *
-                2
+                .discountPercent *
+              2
+              : 0;
+
+          const voucherScore =
+            product.merchantVouchers
+              .length > 0
+              ? 10
               : 0;
 
           const category =
@@ -3130,15 +3543,17 @@ export default function HomePage() {
 
           const totalScore =
             distanceScore *
-              0.3 +
+            0.3 +
             ratingScore *
-              0.2 +
+            0.2 +
             popularityScore *
-              0.2 +
+            0.2 +
             promoScore *
-              0.15 +
+            0.15 +
             timeScore *
-              0.15;
+            0.15 +
+            voucherScore *
+            0.05;
 
           return {
             ...product,
@@ -3187,7 +3602,7 @@ export default function HomePage() {
 
         const suggestions =
           CATEGORY_SUGGESTIONS[
-            activeTab
+          activeTab
           ];
 
         result =
@@ -3221,12 +3636,9 @@ export default function HomePage() {
                 return true;
               }
 
-              /**
-               * Filter Flash Sale.
-               */
               if (
                 activeTab ===
-                  "🏷️ Món Khuyến Mãi Flash Sale"
+                "🏷️ Món Khuyến Mãi Flash Sale"
               ) {
                 return (
                   product.promotion
@@ -3331,11 +3743,6 @@ export default function HomePage() {
    * ==========================================================
    * ADD TO CART
    * ==========================================================
-   *
-   * KHÔNG trừ stock ở đây.
-   *
-   * Stock/soldCount phải xử lý khi order
-   * được tạo thành công.
    */
 
   const handleAddToCart =
@@ -3343,7 +3750,7 @@ export default function HomePage() {
       (product: Product) => {
         const shop =
           shops[
-            product.shopId
+          product.shopId
           ];
 
         if (
@@ -3364,13 +3771,6 @@ export default function HomePage() {
             shop
           );
 
-        /**
-         * Store hiện tại:
-         *
-         * addItem(product, distance, quantity)
-         *
-         * Không truyền deliveryTime.
-         */
         addItemToCart(
           product as any,
           distanceStr,
@@ -3402,7 +3802,7 @@ export default function HomePage() {
 
         const shop =
           shops[
-            realProduct.shopId
+          realProduct.shopId
           ];
 
         if (
@@ -3487,9 +3887,8 @@ export default function HomePage() {
    * ==========================================================
    * FLASH TIMER
    * ==========================================================
-   *
-   * Dùng countdown chung cho UI hiện tại.
    */
+
   useEffect(() => {
     const timer =
       window.setInterval(
@@ -3518,11 +3917,13 @@ export default function HomePage() {
 
   return (
     <div className="bg-[#f4f5f7] min-h-screen pb-24 font-sans text-stone-800 relative">
+
       {/* ======================================================
           TOASTS
           ====================================================== */}
 
       <div className="fixed top-20 right-4 z-50 flex flex-col gap-2.5 max-w-sm w-full pointer-events-none px-4 sm:px-0">
+
         {toasts.map(
           (toast) => {
             let bgGradient =
@@ -3567,11 +3968,13 @@ export default function HomePage() {
                 }
                 className={`pointer-events-auto flex items-start gap-3 p-3.5 rounded-2xl shadow-xl border backdrop-blur-md transform transition-all duration-300 animate-in fade-in slide-in-from-top-2 ${bgGradient}`}
               >
+
                 <span className="text-xl shrink-0 mt-0.5">
                   {icon}
                 </span>
 
                 <div className="flex-1 space-y-0.5">
+
                   <h5 className="text-xs font-black tracking-wide">
                     {
                       toast.title
@@ -3583,6 +3986,7 @@ export default function HomePage() {
                       toast.message
                     }
                   </p>
+
                 </div>
 
                 <button
@@ -3603,10 +4007,12 @@ export default function HomePage() {
                 >
                   ✕
                 </button>
+
               </div>
             );
           }
         )}
+
       </div>
 
       {/* ======================================================
@@ -3614,19 +4020,22 @@ export default function HomePage() {
           ====================================================== */}
 
       <div
-        className={`sticky top-0 z-40 bg-gradient-to-r from-[#ff4500] via-[#ee4d2d] to-[#ff6036] p-3 text-white shadow-md space-y-2.5 transition-transform duration-300 ${
-          showNavbar
-            ? "translate-y-0"
-            : "-translate-y-full"
-        }`}
+        className={`sticky top-0 z-40 bg-gradient-to-r from-[#ff4500] via-[#ee4d2d] to-[#ff6036] p-3 text-white shadow-md space-y-2.5 transition-transform duration-300 ${showNavbar
+          ? "translate-y-0"
+          : "-translate-y-full"
+          }`}
       >
+
         <div className="flex items-center justify-between gap-2">
+
           <div className="flex items-center gap-1.5 overflow-hidden flex-1 bg-black/15 px-3 py-1.5 rounded-full border border-white/25 shadow-inner">
+
             <span className="text-sm shrink-0 animate-bounce">
               🛵
             </span>
 
             <div className="text-[11px] leading-tight truncate flex-1">
+
               <span className="text-[9px] opacity-85 block font-medium">
                 Khách:{" "}
                 <strong>
@@ -3656,6 +4065,7 @@ export default function HomePage() {
                 placeholder="Nhập địa chỉ của bạn..."
                 className="bg-transparent text-white font-bold text-xs focus:outline-none w-full truncate placeholder:text-white/70"
               />
+
             </div>
           </div>
 
@@ -3665,19 +4075,22 @@ export default function HomePage() {
             }
             className="relative p-2 bg-white/10 hover:bg-white/20 rounded-full transition cursor-pointer shadow-sm"
           >
+
             <span className="text-xl">
               🛒
             </span>
 
             {totalCartCount >
               0 && (
-              <span className="absolute -top-1 -right-1 bg-amber-300 text-[#ee4d2d] text-[10px] font-black w-4 h-4 rounded-full flex items-center justify-center border-2 border-[#ee4d2d] shadow-sm animate-pulse">
-                {
-                  totalCartCount
-                }
-              </span>
-            )}
+                <span className="absolute -top-1 -right-1 bg-amber-300 text-[#ee4d2d] text-[10px] font-black w-4 h-4 rounded-full flex items-center justify-center border-2 border-[#ee4d2d] shadow-sm animate-pulse">
+                  {
+                    totalCartCount
+                  }
+                </span>
+              )}
+
           </div>
+
         </div>
 
         {/* SEARCH */}
@@ -3686,7 +4099,9 @@ export default function HomePage() {
           className="relative"
           ref={searchRef}
         >
+
           <div className="relative flex items-center">
+
             <input
               type="text"
               value={
@@ -3753,68 +4168,77 @@ export default function HomePage() {
             >
               Tìm
             </button>
+
           </div>
 
           {isSearchFocused && (
             <div className="absolute top-full left-0 right-0 mt-1 bg-white rounded-xl shadow-xl border border-stone-200/80 p-3 z-50 text-stone-800 space-y-3 animate-in fade-in slide-in-from-top-1 duration-150">
+
               {searchHistory.length >
                 0 && (
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between text-[10px] font-bold text-stone-400">
-                    <span>
-                      LỊCH SỬ
-                      TÌM KIẾM
-                    </span>
+                  <div className="space-y-1.5">
 
-                    <button
-                      type="button"
-                      onClick={
-                        clearHistory
-                      }
-                      className="text-stone-400 hover:text-[#ee4d2d] cursor-pointer"
-                    >
-                      Xóa
-                    </button>
-                  </div>
+                    <div className="flex items-center justify-between text-[10px] font-bold text-stone-400">
 
-                  <div className="flex flex-wrap gap-1.5">
-                    {searchHistory.map(
-                      (
-                        item
-                      ) => (
-                        <span
-                          key={
-                            item
-                          }
-                          onClick={() => {
-                            setSearchQuery(
+                      <span>
+                        LỊCH SỬ
+                        TÌM KIẾM
+                      </span>
+
+                      <button
+                        type="button"
+                        onClick={
+                          clearHistory
+                        }
+                        className="text-stone-400 hover:text-[#ee4d2d] cursor-pointer"
+                      >
+                        Xóa
+                      </button>
+
+                    </div>
+
+                    <div className="flex flex-wrap gap-1.5">
+
+                      {searchHistory.map(
+                        (
+                          item
+                        ) => (
+                          <span
+                            key={
                               item
-                            );
+                            }
+                            onClick={() => {
+                              setSearchQuery(
+                                item
+                              );
 
-                            setIsSearchFocused(
-                              false
-                            );
-                          }}
-                          className="bg-stone-100 hover:bg-orange-50 hover:text-[#ee4d2d] text-stone-600 text-[11px] px-2.5 py-1 rounded-full cursor-pointer transition font-medium"
-                        >
-                          🕒{" "}
-                          {
-                            item
-                          }
-                        </span>
-                      )
-                    )}
+                              setIsSearchFocused(
+                                false
+                              );
+                            }}
+                            className="bg-stone-100 hover:bg-orange-50 hover:text-[#ee4d2d] text-stone-600 text-[11px] px-2.5 py-1 rounded-full cursor-pointer transition font-medium"
+                          >
+                            🕒{" "}
+                            {
+                              item
+                            }
+                          </span>
+                        )
+                      )}
+
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
 
               <div className="space-y-1.5">
+
                 <div className="text-[10px] font-bold text-stone-400 flex items-center gap-1">
                   🔥 TÌM KIẾM
                   PHỔ BIẾN
                 </div>
 
                 <div className="flex flex-wrap gap-1.5">
+
                   {HOT_KEYWORDS.map(
                     (keyword) => (
                       <span
@@ -3842,10 +4266,14 @@ export default function HomePage() {
                       </span>
                     )
                   )}
+
                 </div>
+
               </div>
+
             </div>
           )}
+
         </div>
       </div>
 
@@ -3853,19 +4281,15 @@ export default function HomePage() {
           VOUCHERS
           ====================================================== */}
 
-      {/*
-        KHO VOUCHER:
-        Hiển thị TOÀN BỘ voucher đang hoạt động trên sàn.
-        Không lọc theo targetType / merchant / isSystemCreated ở UI này.
-        Voucher thuộc quán vẫn hiển thị, nhưng logic áp dụng voucher
-        ở checkout phải kiểm tra đúng merchant tương ứng.
-      */}
       {!searchQuery &&
         vouchers.length >
-          0 && (
+        0 && (
           <div className="bg-gradient-to-b from-amber-500/10 via-orange-500/5 to-transparent py-2.5 border-b border-orange-200/40">
+
             <div className="px-3 flex items-center justify-between mb-2">
+
               <div className="flex items-center gap-1.5">
+
                 <span className="text-base">
                   🎟️
                 </span>
@@ -3873,10 +4297,13 @@ export default function HomePage() {
                 <h3 className="text-[11px] font-black text-stone-900 tracking-tight">
                   KHO VOUCHER
                 </h3>
+
               </div>
+
             </div>
 
             <div className="flex gap-2 overflow-x-auto no-scrollbar px-3 py-0.5">
+
               {vouchers.map(
                 (voucher) => {
                   const isSaved =
@@ -3902,7 +4329,7 @@ export default function HomePage() {
                       Math.round(
                         (used /
                           limit) *
-                          100
+                        100
                       )
                     );
 
@@ -3911,19 +4338,19 @@ export default function HomePage() {
                       key={
                         voucher.id
                       }
-                      className={`min-w-[210px] max-w-[210px] bg-white rounded-xl border shadow-2xs flex overflow-hidden relative transition-all duration-200 hover:shadow-sm ${
-                        isSaved
-                          ? "border-emerald-500/80 bg-emerald-50/10"
-                          : "border-amber-200/80"
-                      }`}
-                    >
-                      <div
-                        className={`w-14 shrink-0 flex flex-col items-center justify-center p-1.5 text-white text-center relative border-r border-dashed border-stone-200 ${
-                          isFreeship
-                            ? "bg-gradient-to-br from-emerald-500 to-teal-600"
-                            : "bg-gradient-to-br from-orange-500 to-[#ee4d2d]"
+                      className={`min-w-[210px] max-w-[210px] bg-white rounded-xl border shadow-2xs flex overflow-hidden relative transition-all duration-200 hover:shadow-sm ${isSaved
+                        ? "border-emerald-500/80 bg-emerald-50/10"
+                        : "border-amber-200/80"
                         }`}
+                    >
+
+                      <div
+                        className={`w-14 shrink-0 flex flex-col items-center justify-center p-1.5 text-white text-center relative border-r border-dashed border-stone-200 ${isFreeship
+                          ? "bg-gradient-to-br from-emerald-500 to-teal-600"
+                          : "bg-gradient-to-br from-orange-500 to-[#ee4d2d]"
+                          }`}
                       >
+
                         <span className="text-lg mb-0.5">
                           {isFreeship
                             ? "🚚"
@@ -3938,11 +4365,15 @@ export default function HomePage() {
 
                         <div className="absolute -top-1.5 -right-1.5 w-3 h-3 rounded-full bg-[#f4f5f7]" />
                         <div className="absolute -bottom-1.5 -right-1.5 w-3 h-3 rounded-full bg-[#f4f5f7]" />
+
                       </div>
 
                       <div className="flex-1 p-1.5 flex flex-col justify-between space-y-1">
+
                         <div>
+
                           <div className="flex items-center justify-between gap-1">
+
                             <span className="font-mono text-[9px] font-black text-stone-800 bg-stone-100 px-1 py-0.2 rounded border border-stone-200 truncate">
                               {
                                 voucher.code
@@ -3951,7 +4382,7 @@ export default function HomePage() {
 
                             {voucher.minOrder &&
                               voucher.minOrder >
-                                0 && (
+                              0 && (
                                 <span className="text-[8px] font-bold text-amber-700 bg-amber-50 px-1 py-0.2 rounded shrink-0">
                                   ≥
                                   {formatCurrency(
@@ -3959,6 +4390,7 @@ export default function HomePage() {
                                   )}
                                 </span>
                               )}
+
                           </div>
 
                           <h4 className="text-[10px] font-bold text-stone-800 leading-tight mt-1 line-clamp-1">
@@ -3970,27 +4402,34 @@ export default function HomePage() {
                           {voucher.targetType ===
                             "MERCHANT" &&
                             voucher.merchantName && (
-                            <div className="mt-1 flex items-center gap-1 min-w-0">
-                              <span className="text-[7px] text-stone-400 shrink-0">
-                                Tại
-                              </span>
+                              <div className="mt-1 flex items-center gap-1 min-w-0">
 
-                              <span className="text-[8px] font-extrabold text-orange-600 truncate">
-                                {voucher.merchantName}
-                              </span>
-                            </div>
-                          )}
+                                <span className="text-[7px] text-stone-400 shrink-0">
+                                  Tại
+                                </span>
+
+                                <span className="text-[8px] font-extrabold text-orange-600 truncate">
+                                  {
+                                    voucher.merchantName
+                                  }
+                                </span>
+
+                              </div>
+                            )}
 
                           {voucher.targetType !==
                             "MERCHANT" && (
-                            <div className="mt-1 text-[7px] font-bold text-sky-600">
-                              Toàn hệ thống
-                            </div>
-                          )}
+                              <div className="mt-1 text-[7px] font-bold text-sky-600">
+                                Toàn hệ thống
+                              </div>
+                            )}
+
                         </div>
 
                         <div className="space-y-0.5">
+
                           <div className="flex justify-between items-center text-[7px] text-stone-400 font-medium">
+
                             <span>
                               Đã dùng{" "}
                               {
@@ -4009,25 +4448,27 @@ export default function HomePage() {
                                 )}
                               </span>
                             )}
+
                           </div>
 
                           <div className="w-full bg-stone-100 h-1 rounded-full overflow-hidden">
+
                             <div
-                              className={`h-full rounded-full ${
-                                isFreeship
-                                  ? "bg-teal-500"
-                                  : "bg-[#ee4d2d]"
-                              }`}
+                              className={`h-full rounded-full ${isFreeship
+                                ? "bg-teal-500"
+                                : "bg-[#ee4d2d]"
+                                }`}
                               style={{
-                                width: `${
-                                  usedPercent >
+                                width: `${usedPercent >
                                   0
-                                    ? usedPercent
-                                    : 10
-                                }%`,
+                                  ? usedPercent
+                                  : 10
+                                  }%`,
                               }}
                             />
+
                           </div>
+
                         </div>
 
                         <button
@@ -4037,21 +4478,22 @@ export default function HomePage() {
                               voucher.code
                             )
                           }
-                          className={`w-full py-0.5 text-[9px] font-bold rounded-md transition active:scale-95 ${
-                            isSaved
-                              ? "bg-emerald-600 text-white"
-                              : "bg-orange-100 hover:bg-orange-200 text-[#ee4d2d]"
-                          }`}
+                          className={`w-full py-0.5 text-[9px] font-bold rounded-md transition active:scale-95 ${isSaved
+                            ? "bg-emerald-600 text-white"
+                            : "bg-orange-100 hover:bg-orange-200 text-[#ee4d2d]"
+                            }`}
                         >
                           {isSaved
                             ? "✓ Đã lưu"
                             : "Lưu mã"}
                         </button>
+
                       </div>
                     </div>
                   );
                 }
               )}
+
             </div>
           </div>
         )}
@@ -4063,85 +4505,139 @@ export default function HomePage() {
       {!searchQuery &&
         featuredShops.length > 0 && (
           <div className="bg-white py-2.5 border-b border-stone-200/60 shadow-2xs">
+
             <div className="px-3 flex items-center justify-between mb-2">
+
               <div className="min-w-0">
+
                 <div className="flex items-center gap-1.5">
-                  <span className="text-base">🌟</span>
+
+                  <span className="text-base">
+                    🌟
+                  </span>
+
                   <h3 className="text-[11px] font-black text-stone-900 tracking-tight">
                     QUÁN ƯU ĐÃI NỔI BẬT
                   </h3>
+
                 </div>
+
                 <p className="text-[8px] text-stone-400 font-medium ml-6 mt-0.5">
                   Được ưu tiên hiển thị nhờ chính sách hợp tác nổi bật
                 </p>
+
               </div>
 
               <span className="shrink-0 bg-orange-50 text-[#ee4d2d] border border-orange-200/70 text-[8px] font-black px-2 py-1 rounded-full">
                 Ưu đãi từ Sàn
               </span>
+
             </div>
 
             <div className="flex gap-2 overflow-x-auto no-scrollbar px-3 pb-0.5">
-              {featuredShops.map((shop) => {
-                const systemVoucherCount =
-                  (merchantVoucherMap[shop.id] || []).length ||
-                  (shop.merchantCode
-                    ? (merchantVoucherMap[shop.merchantCode] || []).length
-                    : 0);
 
-                return (
-                  <button
-                    key={shop.id}
-                    type="button"
-                    onClick={() =>
-                      setSelectedShop({
-                        ...shop,
-                        distance: getShopDistance(shop),
-                      })
-                    }
-                    className="min-w-[142px] max-w-[142px] text-left bg-gradient-to-br from-white to-orange-50/40 border border-orange-200/70 rounded-xl p-2 hover:border-[#ee4d2d] hover:shadow-sm transition active:scale-[0.98] shrink-0"
-                  >
-                    <div className="flex items-center gap-2">
-                      <div className="relative shrink-0">
-                        <img
-                          src={shop.avatar}
-                          alt={shop.name}
-                          loading="lazy"
-                          className="w-9 h-9 rounded-full object-cover border-2 border-white shadow-sm"
-                        />
-                        {shop.isOpen && (
-                          <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-white" />
+              {featuredShops.map(
+                (shop) => {
+                  const voucherCount =
+                    (
+                      applicableVoucherMap[
+                      shop.id
+                      ] || []
+                    ).length;
+
+                  return (
+                    <button
+                      key={
+                        shop.id
+                      }
+                      type="button"
+                      onClick={() =>
+                        setSelectedShop({
+                          ...shop,
+                          distance:
+                            getShopDistance(
+                              shop
+                            ),
+                        })
+                      }
+                      className="min-w-[142px] max-w-[142px] text-left bg-gradient-to-br from-white to-orange-50/40 border border-orange-200/70 rounded-xl p-2 hover:border-[#ee4d2d] hover:shadow-sm transition active:scale-[0.98] shrink-0"
+                    >
+
+                      <div className="flex items-center gap-2">
+
+                        <div className="relative shrink-0">
+
+                          <img
+                            src={
+                              shop.avatar
+                            }
+                            alt={
+                              shop.name
+                            }
+                            loading="lazy"
+                            className="w-9 h-9 rounded-full object-cover border-2 border-white shadow-sm"
+                          />
+
+                          {shop.isOpen && (
+                            <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-white" />
+                          )}
+
+                        </div>
+
+                        <div className="min-w-0 flex-1">
+
+                          <p className="text-[10px] font-black text-stone-800 truncate">
+                            {
+                              shop.name
+                            }
+                          </p>
+
+                          <p className="text-[8px] text-stone-500 mt-0.5">
+                            ⭐{" "}
+                            {Number(
+                              shop.rating ||
+                              0
+                            ).toFixed(
+                              1
+                            )}{" "}
+                            ·{" "}
+                            {getShopDistance(
+                              shop
+                            )}
+                          </p>
+
+                        </div>
+
+                      </div>
+
+                      <div className="mt-2 flex items-center justify-between gap-1">
+
+                        <span className="text-[8px] font-black text-[#ee4d2d] bg-orange-100 px-1.5 py-0.5 rounded-md">
+                          Quán nổi bật
+                        </span>
+
+                        {voucherCount >
+                          0 ? (
+                          <span className="text-[7px] font-extrabold text-emerald-700 bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded-md truncate">
+                            🎁{" "}
+                            {
+                              voucherCount
+                            }{" "}
+                            voucher
+                          </span>
+                        ) : (
+                          <span className="text-[7px] font-bold text-stone-400 truncate">
+                            Xem quán →
+                          </span>
                         )}
+
                       </div>
 
-                      <div className="min-w-0 flex-1">
-                        <p className="text-[10px] font-black text-stone-800 truncate">
-                          {shop.name}
-                        </p>
-                        <p className="text-[8px] text-stone-500 mt-0.5">
-                          ⭐ {Number(shop.rating || 0).toFixed(1)} · {getShopDistance(shop)}
-                        </p>
-                      </div>
-                    </div>
+                    </button>
+                  );
+                }
+              )}
 
-                    <div className="mt-2 flex items-center justify-between gap-1">
-                      <span className="text-[8px] font-black text-[#ee4d2d] bg-orange-100 px-1.5 py-0.5 rounded-md">
-                        Quán nổi bật
-                      </span>
-
-                      {systemVoucherCount > 0 ? (
-                        <span className="text-[7px] font-extrabold text-emerald-700 bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded-md truncate">
-                          🎁 Có voucher
-                        </span>
-                      ) : (
-                        <span className="text-[7px] font-bold text-stone-400 truncate">
-                          Xem quán →
-                        </span>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
             </div>
           </div>
         )}
@@ -4151,7 +4647,9 @@ export default function HomePage() {
           ====================================================== */}
 
       <div className="bg-white py-3 px-3 border-b border-stone-200/60 shadow-2xs space-y-2">
+
         <div className="flex items-center justify-between">
+
           <h3 className="text-xs font-black text-stone-800 tracking-tight flex items-center gap-1">
             ✨ ĐỀ XUẤT MÓN
             ĂN CHO BẠN
@@ -4160,16 +4658,18 @@ export default function HomePage() {
           <span className="text-[10px] text-[#ee4d2d] font-bold bg-orange-50 px-2 py-0.5 rounded-full border border-orange-200/50">
             AI gợi ý
           </span>
+
         </div>
 
         <div className="flex gap-2 overflow-x-auto no-scrollbar py-1">
+
           {SMART_SUGGESTIONS.map(
             (item) => {
               const isActive =
                 activeTab ===
-                  item.category &&
+                item.category &&
                 searchQuery ===
-                  "";
+                "";
 
               return (
                 <div
@@ -4199,13 +4699,14 @@ export default function HomePage() {
                       );
                     }
                   }}
-                  className={`min-w-[130px] rounded-xl p-2.5 cursor-pointer transition-all duration-200 shrink-0 space-y-1 relative active:scale-95 border ${
-                    isActive
-                      ? "bg-gradient-to-br from-orange-500 to-[#ee4d2d] text-white border-[#ee4d2d] shadow-md -translate-y-0.5 ring-2 ring-orange-300/50"
-                      : "bg-gradient-to-br from-orange-50/60 to-amber-50/30 border-orange-200/60 text-stone-800 hover:border-[#ee4d2d] hover:bg-orange-50"
-                  }`}
+                  className={`min-w-[130px] rounded-xl p-2.5 cursor-pointer transition-all duration-200 shrink-0 space-y-1 relative active:scale-95 border ${isActive
+                    ? "bg-gradient-to-br from-orange-500 to-[#ee4d2d] text-white border-[#ee4d2d] shadow-md -translate-y-0.5 ring-2 ring-orange-300/50"
+                    : "bg-gradient-to-br from-orange-50/60 to-amber-50/30 border-orange-200/60 text-stone-800 hover:border-[#ee4d2d] hover:bg-orange-50"
+                    }`}
                 >
+
                   <div className="flex items-center justify-between">
+
                     <span className="text-2xl">
                       {
                         item.emoji
@@ -4213,25 +4714,25 @@ export default function HomePage() {
                     </span>
 
                     <span
-                      className={`text-[9px] font-black px-1.5 py-0.5 rounded-md ${
-                        isActive
-                          ? "bg-white text-[#ee4d2d]"
-                          : "bg-orange-200/60 text-orange-900"
-                      }`}
+                      className={`text-[9px] font-black px-1.5 py-0.5 rounded-md ${isActive
+                        ? "bg-white text-[#ee4d2d]"
+                        : "bg-orange-200/60 text-orange-900"
+                        }`}
                     >
                       {isActive
                         ? "✓ Đang chọn"
                         : "Gợi ý"}
                     </span>
+
                   </div>
 
                   <div>
+
                     <p
-                      className={`text-[11px] font-bold truncate ${
-                        isActive
-                          ? "text-white"
-                          : "text-stone-800"
-                      }`}
+                      className={`text-[11px] font-bold truncate ${isActive
+                        ? "text-white"
+                        : "text-stone-800"
+                        }`}
                     >
                       {
                         item.label
@@ -4239,10 +4740,12 @@ export default function HomePage() {
                     </p>
 
                   </div>
+
                 </div>
               );
             }
           )}
+
         </div>
       </div>
 
@@ -4251,6 +4754,7 @@ export default function HomePage() {
           ====================================================== */}
 
       <div className="px-2 py-2 flex items-center gap-1.5 overflow-x-auto no-scrollbar bg-stone-100/85 sticky top-[0px] z-30 backdrop-blur-md">
+
         {[
           {
             id: "recommend",
@@ -4277,18 +4781,18 @@ export default function HomePage() {
                 filter.id
               )
             }
-            className={`px-3 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap border transition shrink-0 ${
-              quickFilter ===
+            className={`px-3 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap border transition shrink-0 ${quickFilter ===
               filter.id
-                ? "bg-[#ee4d2d] text-white border-[#ee4d2d]"
-                : "bg-white text-stone-600 border-stone-200 hover:bg-stone-50"
-            }`}
+              ? "bg-[#ee4d2d] text-white border-[#ee4d2d]"
+              : "bg-white text-stone-600 border-stone-200 hover:bg-stone-50"
+              }`}
           >
             {
               filter.label
             }
           </button>
         ))}
+
       </div>
 
       {/* ======================================================
@@ -4297,6 +4801,7 @@ export default function HomePage() {
 
       {searchQuery && (
         <div className="px-3 py-2 bg-orange-100/70 border-b border-orange-200 flex items-center justify-between text-xs">
+
           <span>
             Kết quả cho từ
             khóa:{" "}
@@ -4318,6 +4823,7 @@ export default function HomePage() {
           >
             Xóa tìm kiếm
           </button>
+
         </div>
       )}
 
@@ -4329,33 +4835,43 @@ export default function HomePage() {
         (activeDeals.length >
           0 ||
           upcomingDeals.length >
-            0) && (
+          0) && (
           <div className="bg-white my-2 py-3.5 border-y border-stone-200/70 shadow-2xs">
+
             <div className="px-3 space-y-2.5">
+
               <div className="flex items-center justify-between">
+
                 <div className="flex items-center gap-2">
+
                   <div className="bg-gradient-to-r from-red-600 to-[#ee4d2d] text-white font-black italic text-xs px-2.5 py-1 rounded-lg tracking-wider flex items-center gap-1 shadow-xs">
+
                     <span className="animate-bounce">
                       ⚡
                     </span>
+
                     FLASH DEAL
                     CỬA HÀNG
+
                   </div>
 
                   {flashTab ===
                     "active" && (
-                    <div className="flex items-center gap-1 text-[11px] font-bold text-stone-700">
-                      <span className="text-stone-400 font-normal">
-                        Kết thúc:
-                      </span>
+                      <div className="flex items-center gap-1 text-[11px] font-bold text-stone-700">
 
-                      <span className="bg-stone-900 text-amber-400 font-mono text-[10px] px-1.5 py-0.5 rounded-md font-bold">
-                        {formatTime(
-                          timeLeft
-                        )}
-                      </span>
-                    </div>
-                  )}
+                        <span className="text-stone-400 font-normal">
+                          Kết thúc:
+                        </span>
+
+                        <span className="bg-stone-900 text-amber-400 font-mono text-[10px] px-1.5 py-0.5 rounded-md font-bold">
+                          {formatTime(
+                            timeLeft
+                          )}
+                        </span>
+
+                      </div>
+                    )}
+
                 </div>
 
                 <button
@@ -4367,9 +4883,11 @@ export default function HomePage() {
                     ➔
                   </span>
                 </button>
+
               </div>
 
               <div className="flex items-center gap-2 border-b border-stone-100 pb-2">
+
                 <button
                   type="button"
                   onClick={() =>
@@ -4377,12 +4895,11 @@ export default function HomePage() {
                       "active"
                     )
                   }
-                  className={`text-xs font-bold px-3 py-1 rounded-full ${
-                    flashTab ===
+                  className={`text-xs font-bold px-3 py-1 rounded-full ${flashTab ===
                     "active"
-                      ? "bg-rose-50 text-[#ee4d2d] border border-rose-200"
-                      : "text-stone-500 hover:bg-stone-100"
-                  }`}
+                    ? "bg-rose-50 text-[#ee4d2d] border border-rose-200"
+                    : "text-stone-500 hover:bg-stone-100"
+                    }`}
                 >
                   🔥 Đang ưu đãi{" "}
                   <span className="bg-[#ee4d2d] text-white text-[9px] px-1.5 py-0.2 rounded-full ml-1">
@@ -4394,41 +4911,43 @@ export default function HomePage() {
 
                 {upcomingDeals.length >
                   0 && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setFlashTab(
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setFlashTab(
+                          "upcoming"
+                        )
+                      }
+                      className={`text-xs font-bold px-3 py-1 rounded-full ${flashTab ===
                         "upcoming"
-                      )
-                    }
-                    className={`text-xs font-bold px-3 py-1 rounded-full ${
-                      flashTab ===
-                      "upcoming"
                         ? "bg-amber-50 text-amber-700 border border-amber-200"
                         : "text-stone-500 hover:bg-stone-100"
-                    }`}
-                  >
-                    ⏰ Sắp mở bán{" "}
-                    <span className="bg-amber-500 text-white text-[9px] px-1.5 py-0.2 rounded-full ml-1">
-                      {
-                        upcomingDeals.length
-                      }
-                    </span>
-                  </button>
-                )}
+                        }`}
+                    >
+                      ⏰ Sắp mở bán{" "}
+                      <span className="bg-amber-500 text-white text-[9px] px-1.5 py-0.2 rounded-full ml-1">
+                        {
+                          upcomingDeals.length
+                        }
+                      </span>
+                    </button>
+                  )}
+
               </div>
+
             </div>
 
             <div className="flex gap-2.5 overflow-x-auto no-scrollbar px-3 pt-2">
+
               {(flashTab ===
-              "active"
+                "active"
                 ? activeDeals
                 : upcomingDeals
               ).map(
                 (item) => {
                   const shop =
                     shops[
-                      item.shopId
+                    item.shopId
                     ];
 
                   const isShopOpen =
@@ -4440,7 +4959,7 @@ export default function HomePage() {
                     item.promotion
                       .isDiscountActive
                       ? item.promotion
-                          .currentPrice
+                        .currentPrice
                       : item.price;
 
                   const distanceStr =
@@ -4456,36 +4975,37 @@ export default function HomePage() {
                           item
                         )
                       }
-                      className={`min-w-[145px] max-w-[145px] bg-white border border-stone-200/95 rounded-2xl p-2 relative flex flex-col justify-between shadow-2xs cursor-pointer hover:border-[#ee4d2d] hover:shadow-md transition ${
-                        !isShopOpen
-                          ? "opacity-60"
-                          : ""
-                      }`}
+                      className={`min-w-[145px] max-w-[145px] bg-white border border-stone-200/95 rounded-2xl p-2 relative flex flex-col justify-between shadow-2xs cursor-pointer hover:border-[#ee4d2d] hover:shadow-md transition ${!isShopOpen
+                        ? "opacity-60"
+                        : ""
+                        }`}
                     >
+
                       {item
                         .promotion
                         .discountPercent >
                         0 && (
-                        <div
-                          className={`absolute top-0 right-0 text-white text-[10px] font-black px-2 py-0.5 rounded-bl-xl rounded-tr-2xl z-10 shadow-xs ${
-                            item.promotion
+                          <div
+                            className={`absolute top-0 right-0 text-white text-[10px] font-black px-2 py-0.5 rounded-bl-xl rounded-tr-2xl z-10 shadow-xs ${item.promotion
                               .discountPercent >=
-                            30
+                              30
                               ? "bg-gradient-to-b from-purple-600 via-red-600 to-[#ee4d2d]"
                               : "bg-gradient-to-b from-red-500 to-[#ee4d2d]"
-                          }`}
-                        >
-                          -
-                          {
-                            item
-                              .promotion
-                              .discountPercent
-                          }%
-                        </div>
-                      )}
+                              }`}
+                          >
+                            -
+                            {
+                              item
+                                .promotion
+                                .discountPercent
+                            }%
+                          </div>
+                        )}
 
                       <div className="space-y-1.5">
+
                         <div className="h-24 bg-stone-100 rounded-xl overflow-hidden relative">
+
                           <img
                             src={
                               item.imageUrl
@@ -4522,9 +5042,11 @@ export default function HomePage() {
                               </span>
                             </div>
                           )}
+
                         </div>
 
                         <div>
+
                           <p className="text-[9px] font-semibold text-stone-400 truncate">
                             🏬{" "}
                             {
@@ -4537,11 +5059,14 @@ export default function HomePage() {
                               item.name
                             }
                           </h4>
+
                         </div>
                       </div>
 
                       <div className="space-y-1.5 pt-1.5 border-t border-stone-100 mt-1">
+
                         <div>
+
                           <span className="text-xs font-black text-[#ee4d2d]">
                             {formatCurrency(
                               price
@@ -4550,82 +5075,87 @@ export default function HomePage() {
 
                           {item.originalPrice >
                             price && (
-                            <div className="text-[9px] text-stone-400 line-through">
-                              {formatCurrency(
-                                item.originalPrice
-                              )}
-                            </div>
-                          )}
+                              <div className="text-[9px] text-stone-400 line-through">
+                                {formatCurrency(
+                                  item.originalPrice
+                                )}
+                              </div>
+                            )}
+
                         </div>
 
                         {flashTab ===
                           "active" && (
-                          <div className="space-y-1">
-                            {item.maxPerUser !==
-                              null &&
-                              item.maxPerUser !==
-                                undefined &&
-                              Number(
-                                item.maxPerUser
-                              ) >
-                                0 ? (
-                              <div className="bg-purple-50 border border-purple-100 text-purple-700 rounded-full text-center py-0.5">
-                                <span className="text-[8px] font-black">
-                                  👑 Tối đa{" "}
-                                  {
-                                    item.maxPerUser
-                                  }{" "}
-                                  món/khách
-                                </span>
-                              </div>
-                            ) : item.discountStock !==
+                            <div className="space-y-1">
+
+                              {item.maxPerUser !==
                                 null &&
-                              item.discountStock !==
+                                item.maxPerUser !==
                                 undefined &&
-                              Number(
-                                item.discountStock
-                              ) >
+                                Number(
+                                  item.maxPerUser
+                                ) >
                                 0 ? (
-                              <div className="bg-rose-50 border border-rose-100 text-[#ee4d2d] rounded-full text-center py-0.5">
-                                <span className="text-[8px] font-black">
-                                  🔥 Còn{" "}
-                                  {
-                                    item.discountStock
-                                  }{" "}
-                                  suất giảm giá
-                                </span>
-                              </div>
-                            ) : null}
+                                <div className="bg-purple-50 border border-purple-100 text-purple-700 rounded-full text-center py-0.5">
+                                  <span className="text-[8px] font-black">
+                                    👑 Tối đa{" "}
+                                    {
+                                      item.maxPerUser
+                                    }{" "}
+                                    món/khách
+                                  </span>
+                                </div>
+                              ) : item.discountStock !==
+                                null &&
+                                item.discountStock !==
+                                undefined &&
+                                Number(
+                                  item.discountStock
+                                ) >
+                                0 ? (
+                                <div className="bg-rose-50 border border-rose-100 text-[#ee4d2d] rounded-full text-center py-0.5">
+                                  <span className="text-[8px] font-black">
+                                    🔥 Còn{" "}
+                                    {
+                                      item.discountStock
+                                    }{" "}
+                                    suất giảm giá
+                                  </span>
+                                </div>
+                              ) : null}
 
-                            <button
-                              type="button"
-                              disabled={
-                                !isShopOpen
-                              }
-                              onClick={(
-                                event
-                              ) => {
-                                event.stopPropagation();
+                              <button
+                                type="button"
+                                disabled={
+                                  !isShopOpen
+                                }
+                                onClick={(
+                                  event
+                                ) => {
+                                  event.stopPropagation();
 
-                                handleAddToCart(
-                                  item
-                                );
-                              }}
-                              className="w-full bg-[#ee4d2d] hover:bg-[#d73f20] text-white text-[10px] font-bold py-1 rounded-lg transition active:scale-95"
-                            >
-                              + Thêm món
-                            </button>
-                          </div>
-                        )}
+                                  handleAddToCart(
+                                    item
+                                  );
+                                }}
+                                className="w-full bg-[#ee4d2d] hover:bg-[#d73f20] text-white text-[10px] font-bold py-1 rounded-lg transition active:scale-95"
+                              >
+                                + Thêm món
+                              </button>
+
+                            </div>
+                          )}
 
                         {flashTab ===
                           "upcoming" && (
-                          <div className="space-y-1">
-                            <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-md text-center py-0.5">
-                              <span className="text-[8px] font-bold">
-                                ⏰ Mở bán{" "}
-                                {item.discountStartTime
-                                  ? new Date(
+                            <div className="space-y-1">
+
+                              <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-md text-center py-0.5">
+
+                                <span className="text-[8px] font-bold">
+                                  ⏰ Mở bán{" "}
+                                  {item.discountStartTime
+                                    ? new Date(
                                       item.discountStartTime
                                     ).toLocaleTimeString(
                                       "vi-VN",
@@ -4635,41 +5165,44 @@ export default function HomePage() {
                                           "2-digit",
                                       }
                                     )
-                                  : "Sắp tới"}
-                              </span>
-                            </div>
+                                    : "Sắp tới"}
+                                </span>
 
-                            <button
-                              type="button"
-                              onClick={(
-                                event
-                              ) =>
-                                toggleReminder(
-                                  item.id,
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={(
                                   event
-                                )
-                              }
-                              className={`w-full text-[10px] font-bold py-1 rounded-lg border ${
-                                reminders[
+                                ) =>
+                                  toggleReminder(
+                                    item.id,
+                                    event
+                                  )
+                                }
+                                className={`w-full text-[10px] font-bold py-1 rounded-lg border ${reminders[
                                   item.id
                                 ]
                                   ? "bg-amber-500 text-white border-amber-500"
                                   : "bg-white text-amber-600 border-amber-400"
-                              }`}
-                            >
-                              {reminders[
-                                item.id
-                              ]
-                                ? "✓ Đã đặt"
-                                : "🔔 Nhắc tôi"}
-                            </button>
-                          </div>
-                        )}
+                                  }`}
+                              >
+                                {reminders[
+                                  item.id
+                                ]
+                                  ? "✓ Đã đặt"
+                                  : "🔔 Nhắc tôi"}
+                              </button>
+
+                            </div>
+                          )}
+
                       </div>
                     </div>
                   );
                 }
               )}
+
             </div>
           </div>
         )}
@@ -4679,7 +5212,9 @@ export default function HomePage() {
           ====================================================== */}
 
       <div className="bg-white border-b border-stone-200/80 shadow-2xs mt-1 py-2">
+
         <div className="flex gap-2 overflow-x-auto no-scrollbar px-3 whitespace-nowrap">
+
           <button
             type="button"
             onClick={() =>
@@ -4687,12 +5222,11 @@ export default function HomePage() {
                 "all"
               )
             }
-            className={`px-3.5 py-2 rounded-xl text-xs font-bold border shrink-0 ${
-              activeTab ===
+            className={`px-3.5 py-2 rounded-xl text-xs font-bold border shrink-0 ${activeTab ===
               "all"
-                ? "bg-stone-900 text-white border-stone-900"
-                : "bg-stone-50 text-stone-600 border-stone-200"
-            }`}
+              ? "bg-stone-900 text-white border-stone-900"
+              : "bg-stone-50 text-stone-600 border-stone-200"
+              }`}
           >
             🌈 Tất cả (
             {
@@ -4715,12 +5249,11 @@ export default function HomePage() {
                     category
                   )
                 }
-                className={`px-3.5 py-2 rounded-xl text-xs font-bold border shrink-0 ${
-                  activeTab ===
+                className={`px-3.5 py-2 rounded-xl text-xs font-bold border shrink-0 ${activeTab ===
                   category
-                    ? "bg-orange-500 text-white border-orange-500"
-                    : "bg-white text-stone-600 border-stone-200"
-                }`}
+                  ? "bg-orange-500 text-white border-orange-500"
+                  : "bg-white text-stone-600 border-stone-200"
+                  }`}
               >
                 {
                   category
@@ -4728,6 +5261,7 @@ export default function HomePage() {
               </button>
             )
           )}
+
         </div>
       </div>
 
@@ -4736,25 +5270,33 @@ export default function HomePage() {
           ====================================================== */}
 
       {loading ? (
+
         <div className="p-2 grid grid-cols-2 gap-2">
+
           {[1, 2, 3, 4].map(
             (item) => (
               <div
                 key={item}
                 className="bg-white rounded-xl p-2 space-y-2 animate-pulse border border-stone-200/60"
               >
+
                 <div className="aspect-square bg-stone-200 rounded-lg" />
 
                 <div className="h-3 bg-stone-200 rounded-xs w-3/4" />
 
                 <div className="h-3 bg-stone-200 rounded-xs w-1/2" />
+
               </div>
             )
           )}
+
         </div>
+
       ) : filteredProducts.length ===
         0 ? (
+
         <div className="p-8 text-center space-y-2">
+
           <span className="text-4xl">
             🔍
           </span>
@@ -4782,14 +5324,18 @@ export default function HomePage() {
             Xóa tìm kiếm &
             xem tất cả món
           </button>
+
         </div>
+
       ) : (
+
         <div className="p-2 grid grid-cols-2 gap-2">
+
           {filteredProducts.map(
             (product) => {
               const shop =
                 shops[
-                  product.shopId
+                product.shopId
                 ];
 
               const isShopOpen =
@@ -4804,18 +5350,59 @@ export default function HomePage() {
               } =
                 product.promotion;
 
+              /**
+               * ==================================================
+               * VOUCHER DISPLAY
+               * ==================================================
+               */
+
+              const firstVoucher =
+                product.merchantVouchers[
+                0
+                ];
+
+              const hasVoucher =
+                product
+                  .merchantVouchers
+                  .length >
+                0;
+
+              const voucherBenefit =
+                firstVoucher
+                  ? getVoucherBenefitText(
+                    firstVoucher,
+                    formatCurrency
+                  )
+                  : "";
+
+              const voucherCondition =
+                firstVoucher
+                  ? getVoucherConditionText(
+                    firstVoucher,
+                    formatCurrency
+                  )
+                  : "";
+
+              const firstVoucherSaved =
+                firstVoucher
+                  ? savedVouchers.includes(
+                    firstVoucher.code
+                  )
+                  : false;
+
               return (
                 <div
                   key={
                     product.id
                   }
-                  className={`bg-white rounded-xl overflow-hidden border border-stone-200/70 shadow-2xs hover:shadow-md transition flex flex-col justify-between group ${
-                    !isShopOpen
-                      ? "opacity-75"
-                      : ""
-                  }`}
+                  className={`bg-white rounded-xl overflow-hidden border border-stone-200/70 shadow-2xs hover:shadow-md transition flex flex-col justify-between group ${!isShopOpen
+                    ? "opacity-75"
+                    : ""
+                    }`}
                 >
+
                   <div>
+
                     {/* SHOP */}
 
                     {shop && (
@@ -4835,7 +5422,9 @@ export default function HomePage() {
                         }}
                         className="flex items-center justify-between p-1.5 bg-stone-50 border-b border-stone-100 cursor-pointer"
                       >
+
                         <div className="flex items-center gap-1.5 overflow-hidden flex-1">
+
                           <img
                             src={
                               shop.avatar
@@ -4852,6 +5441,7 @@ export default function HomePage() {
                               shop.name
                             }
                           </span>
+
                         </div>
 
                         <span className="bg-orange-100 text-[#ee4d2d] font-bold text-[9px] px-1.5 py-0.5 rounded-md shrink-0">
@@ -4861,6 +5451,7 @@ export default function HomePage() {
                           }
                           p
                         </span>
+
                       </div>
                     )}
 
@@ -4874,7 +5465,9 @@ export default function HomePage() {
                       }
                       className="cursor-pointer"
                     >
+
                       <div className="relative aspect-square bg-stone-100 overflow-hidden">
+
                         <img
                           src={
                             product.imageUrl
@@ -4886,7 +5479,10 @@ export default function HomePage() {
                           className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
                         />
 
+                        {/* DISTANCE + VOUCHER */}
+
                         <div className="absolute top-1 left-1 flex flex-col gap-1 items-start z-10">
+
                           <span className="bg-black/70 text-amber-300 border border-amber-300/30 text-[8px] font-extrabold px-1.5 py-0.5 rounded-md">
                             📍{" "}
                             {
@@ -4897,17 +5493,20 @@ export default function HomePage() {
                           {quickFilter ===
                             "recommend" &&
                             product.totalScore >
-                              65 && (
+                            65 && (
                               <span className="bg-gradient-to-r from-amber-500 to-orange-500 text-white text-[8px] font-black px-1.5 py-0.5 rounded-r-md">
                                 Gợi Ý Hot 🔥
                               </span>
                             )}
+
                         </div>
+
+                        {/* PRODUCT DISCOUNT */}
 
                         {isDiscountActive &&
                           discountPercent >
-                            0 && (
-                            <div className="absolute top-0 right-0 bg-[#ee4d2d] text-white text-[9px] font-black px-1.5 py-0.5 rounded-bl-lg shadow-2xs">
+                          0 && (
+                            <div className="absolute top-0 right-0 bg-[#ee4d2d] text-white text-[9px] font-black px-1.5 py-0.5 rounded-bl-lg shadow-2xs z-10">
                               -
                               {
                                 discountPercent
@@ -4917,78 +5516,46 @@ export default function HomePage() {
                           )}
 
                         {/* ====================================
-                            VOUCHER CỦA QUÁN
+                            VOUCHER BADGE
                             ==================================== */}
 
-                        {product.merchantVouchers.length >
-                          0 && (
-                          <div className="absolute bottom-1.5 left-1.5 right-1.5 z-10">
-                            <div className="flex items-center gap-1.5 max-w-full rounded-lg bg-white/95 backdrop-blur-sm border border-emerald-200 shadow-sm px-2 py-1">
-                              <span className="shrink-0 text-[10px] leading-none">
-                                🎁
+                        {hasVoucher && (
+                          <div className="absolute bottom-2 left-2 right-2 z-10 pointer-events-none">
+                            <div className="flex max-w-full items-center gap-1.5 rounded-full border border-emerald-200 bg-white/95 px-2.5 py-1 shadow-sm backdrop-blur-md">
+                              <span className="shrink-0 text-[12px] leading-none">
+                                {firstVoucher?.applyType === "SHIPPING" ? "🚚" : "🏷️"}
                               </span>
 
-                              <span className="truncate text-[8px] font-extrabold text-emerald-700">
-                                {(() => {
-                                  const voucher =
-                                    product.merchantVouchers[0];
-
-                                  if (
-                                    voucher.applyType ===
-                                    "SHIPPING"
-                                  ) {
-                                    if (
-                                      voucher.discountType ===
-                                      "PERCENTAGE"
-                                    ) {
-                                      return `Giảm ${voucher.discountValue}% phí ship`;
-                                    }
-
-                                    return `Giảm ${formatCurrency(
-                                      voucher.discountValue
-                                    )} phí ship`;
-                                  }
-
-                                  if (
-                                    voucher.discountType ===
-                                    "PERCENTAGE"
-                                  ) {
-                                    return `Giảm ${voucher.discountValue}% đơn`;
-                                  }
-
-                                  return `Giảm ${formatCurrency(
-                                    voucher.discountValue
-                                  )}`;
-                                })()}
+                              <span className="truncate text-[10px] font-extrabold leading-none text-emerald-600">
+                                {voucherBenefit}
                               </span>
-
-                              {product.merchantVouchers.length >
-                                1 && (
-                                <span className="shrink-0 text-[7px] font-bold text-emerald-600 bg-emerald-50 rounded px-1 py-0.5">
-                                  +{product.merchantVouchers.length - 1}
-                                </span>
-                              )}
                             </div>
                           </div>
                         )}
+
+
                       </div>
 
                       <div className="p-2 space-y-1">
+
                         <h3 className="text-[11px] font-bold text-stone-800 line-clamp-2 leading-snug group-hover:text-[#ee4d2d] transition">
                           {
                             product.name
                           }
                         </h3>
 
+                        {/* VOUCHER SUMMARY UNDER NAME */}
+
+
                         {isDiscountActive &&
                           product.maxPerUser !==
-                            null &&
+                          null &&
                           product.maxPerUser !==
-                            undefined &&
+                          undefined &&
                           Number(
                             product.maxPerUser
                           ) >
-                            0 && (
+                          0 && (
                             <div className="inline-block bg-purple-50 text-purple-700 font-extrabold text-[8px] px-1.5 py-0.5 rounded-md border border-purple-100">
                               👑 Max{" "}
                               {
@@ -4997,35 +5564,44 @@ export default function HomePage() {
                               món/khách
                             </div>
                           )}
+
                       </div>
+
                     </div>
                   </div>
 
                   {/* PRICE */}
 
                   <div className="p-2 pt-0 space-y-1.5">
+
                     <div className="space-y-0.5">
+
                       <div className="flex items-baseline gap-1">
+
                         <span className="text-xs font-black text-[#ee4d2d]">
                           {formatCurrency(
                             currentPrice
                           )}
                         </span>
+
                       </div>
 
                       {product
                         .originalPrice >
                         currentPrice && (
-                        <div className="text-[9px] text-stone-400 line-through">
-                          {formatCurrency(
-                            product.originalPrice
-                          )}
-                        </div>
-                      )}
+                          <div className="text-[9px] text-stone-400 line-through">
+                            {formatCurrency(
+                              product.originalPrice
+                            )}
+                          </div>
+                        )}
+
                     </div>
 
                     <div className="flex items-center justify-between text-[9px] text-stone-500 pt-1.5 border-t border-stone-100">
+
                       <div className="flex items-center gap-1 flex-wrap truncate">
+
                         <span className="text-amber-500 font-bold">
                           ★{" "}
                           {
@@ -5038,10 +5614,11 @@ export default function HomePage() {
                           (
                           {
                             product.reviewCount ||
-                              0
+                            0
                           }
                           )
                         </span>
+
                       </div>
 
                       <button
@@ -5058,11 +5635,10 @@ export default function HomePage() {
                             product
                           );
                         }}
-                        className={`${
-                          isShopOpen
-                            ? "bg-[#ee4d2d] hover:bg-[#d73f20]"
-                            : "bg-stone-300 text-stone-500 cursor-not-allowed"
-                        } active:scale-95 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg transition shadow-2xs flex items-center gap-0.5 shrink-0 ml-1`}
+                        className={`${isShopOpen
+                          ? "bg-[#ee4d2d] hover:bg-[#d73f20]"
+                          : "bg-stone-300 text-stone-500 cursor-not-allowed"
+                          } active:scale-95 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg transition shadow-2xs flex items-center gap-0.5 shrink-0 ml-1`}
                       >
                         {
                           isShopOpen
@@ -5070,12 +5646,16 @@ export default function HomePage() {
                             : "Tạm đóng"
                         }
                       </button>
+
                     </div>
+
                   </div>
+
                 </div>
               );
             }
           )}
+
         </div>
       )}
 
@@ -5087,51 +5667,57 @@ export default function HomePage() {
         product={
           selectedProduct
         }
+
         shop={
           selectedProduct
             ? shops[
+              selectedProduct
+                .shopId
+            ]
+              ? (shops[
                 selectedProduct
                   .shopId
-              ]
-              ? (shops[
-                  selectedProduct
-                    .shopId
-                ] as any)
+              ] as any)
               : undefined
             : undefined
         }
+
         distanceStr={
           selectedProduct
             ? getShopDistance(
-                shops[
-                  selectedProduct
-                    .shopId
-                ]
-              )
+              shops[
+              selectedProduct
+                .shopId
+              ]
+            )
             : "2.0 km"
         }
+
         deliveryTime={
           selectedProduct
             ? calculateETA(
-                selectedProduct.prepTime ||
-                  15,
-                getShopDistanceKm(
-                  shops[
-                    selectedProduct
-                      .shopId
-                  ]
-                )
+              selectedProduct.prepTime ||
+              15,
+              getShopDistanceKm(
+                shops[
+                selectedProduct
+                  .shopId
+                ]
               )
+            )
             : 20
         }
+
         onClose={() =>
           setSelectedProduct(
             null
           )
         }
+
         onAddToCart={
           handleAddToCartModal
         }
+
         formatCurrency={
           formatCurrency
         }
@@ -5143,32 +5729,38 @@ export default function HomePage() {
 
       <ShopDetailModal
         shop={selectedShop}
+
         products={products}
+
         distanceStr={
           selectedShop
             ? getShopDistance(
-                selectedShop
-              )
+              selectedShop
+            )
             : "2.0 km"
         }
+
         deliveryTime={
           selectedShop
             ? calculateETA(
-                15,
-                getShopDistanceKm(
-                  selectedShop
-                )
+              15,
+              getShopDistanceKm(
+                selectedShop
               )
+            )
             : 20
         }
+
         onClose={() =>
           setSelectedShop(
             null
           )
         }
+
         onAddToCart={
           handleAddToCart
         }
+
         onProductClick={(
           product
         ) => {
@@ -5180,10 +5772,12 @@ export default function HomePage() {
             product
           );
         }}
+
         formatCurrency={
           formatCurrency
         }
       />
+
     </div>
   );
 }

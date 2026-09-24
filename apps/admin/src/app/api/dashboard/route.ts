@@ -1,135 +1,227 @@
 import { NextResponse } from "next/server";
 import { adminDb } from "@/lib/firebase-admin";
 
-// Helper tính phí ship sàn giữ theo sơ đồ Km và Giờ
-const calculatePlatformShippingCut = (distanceKm: number, createdAt: Date) => {
-  let cut = 0;
-  if (distanceKm <= 1) cut += 2000;
-  else if (distanceKm <= 2) cut += 3000;
-  else if (distanceKm <= 3) cut += 4000;
-  else if (distanceKm <= 4) cut += 4500;
-  else if (distanceKm <= 5) cut += 5000;
-  else cut += 5500;
+/* =========================================================
+   HELPERS
+========================================================= */
 
-  const hours = createdAt.getHours();
-  const minutes = createdAt.getMinutes();
-  const timeInMinutes = hours * 60 + minutes;
+const normalizeStatus = (value: unknown): string =>
+  String(value ?? "")
+    .toLowerCase()
+    .trim();
 
-  if (timeInMinutes >= 11 * 60 && timeInMinutes <= 12 * 60 + 30) cut += 500;
-  else if (timeInMinutes >= 18 * 60 && timeInMinutes <= 19 * 60 + 59) cut += 1500;
-  else if (timeInMinutes >= 20 * 60 || timeInMinutes === 0) cut += 2500;
+const parseDate = (value: any): Date => {
+  if (!value) return new Date(0);
 
-  return cut;
+  try {
+    if (typeof value?.toDate === "function") {
+      return value.toDate();
+    }
+
+    if (value?.seconds !== undefined) {
+      return new Date(Number(value.seconds) * 1000);
+    }
+
+    if (value?._seconds !== undefined) {
+      return new Date(Number(value._seconds) * 1000);
+    }
+
+    const date = new Date(value);
+    return Number.isNaN(date.getTime())
+      ? new Date(0)
+      : date;
+  } catch {
+    return new Date(0);
+  }
 };
+
+const serializeCreatedAt = (value: any): string | null => {
+  const date = parseDate(value);
+
+  return date.getTime() > 0
+    ? date.toISOString()
+    : null;
+};
+
+/* =========================================================
+   STATUS GROUPS
+========================================================= */
+
+const PENDING_STATUSES = new Set([
+  "pending_payment",
+  "pending",
+  "finding_driver",
+]);
+
+const ACTIVE_STATUSES = new Set([
+  "accepted",
+  "preparing",
+  "processing",
+  "ready",
+  "ready_for_pickup",
+  "assigned",
+  "picking_up",
+  "delivering",
+  "shipping",
+]);
+
+const COMPLETED_STATUSES = new Set([
+  "completed",
+  "delivered",
+]);
+
+const CANCELLED_STATUSES = new Set([
+  "cancelled",
+  "canceled",
+]);
+
+const REFUNDED_STATUSES = new Set([
+  "refunded",
+]);
+
+/* =========================================================
+   DASHBOARD API
+
+   QUAN TRỌNG:
+   - API này KHÔNG tính tài chính.
+   - Không tính lại Merchant commission.
+   - Không tính lại phí Shipper.
+   - Không tính lại Voucher.
+   - Không tính lại "Sàn nhận thực".
+
+   Finance Source of Truth = /api/revenue
+========================================================= */
 
 export async function GET() {
   try {
-    // 1. Lấy cấu hình hoa hồng sàn
-    const configDoc = await adminDb.collection("settings").doc("commission").get();
-    const config = configDoc.exists
-      ? configDoc.data()
-      : { platformFeePercent: 10, shippingFeePercent: 20 };
-
-    const platformFeePercent = Number(config?.platformFeePercent ?? 10);
-    const shippingFeePercent = Number(config?.shippingFeePercent ?? 20);
-
-    // 2. Truy vấn đồng thời các collections
-    const [ordersSnap, merchantsSnap, usersSnap, productsSnap] = await Promise.all([
+    const [
+      ordersSnap,
+      merchantsSnap,
+      usersSnap,
+      productsSnap,
+    ] = await Promise.all([
       adminDb.collection("orders").get(),
       adminDb.collection("merchants").get(),
       adminDb.collection("users").get(),
       adminDb.collection("products").get(),
     ]);
 
-    let totalGMV = 0;
-    let platformProfit = 0;
+    /* =====================================================
+       ORDER STATUS STATS
+    ===================================================== */
+
     let pendingOrders = 0;
+    let activeOrders = 0;
+    let completedOrders = 0;
+    let cancelledOrders = 0;
+    let refundedOrders = 0;
 
     const recentOrders: any[] = [];
 
-    ordersSnap.docs.forEach((doc) => {
-      const order = { id: doc.id, ...doc.data() } as any;
-      const status = (order.status || "").toString().toLowerCase().trim();
+    for (const orderDoc of ordersSnap.docs) {
+      const data = orderDoc.data() as Record<string, any>;
+      const status = normalizeStatus(data?.status);
 
-      if (status === "pending" || status === "finding_driver") {
+      if (PENDING_STATUSES.has(status)) {
         pendingOrders += 1;
       }
 
-      // Chỉ tính doanh thu/lợi nhuận các đơn hoàn thành
-      if (status === "completed" || status === "delivered") {
-        const amount = Number(order.totalPrice ?? order.total ?? order.amount ?? 0);
-        const shippingFee = Number(order.shippingFee ?? order.shipFee ?? order.deliveryFee ?? 0);
-
-        totalGMV += amount;
-
-        // A. Tính Giá Món Gốc chưa KM (subTotalCostPrice)
-        let subTotalCostPrice = Number(order.subTotalCostPrice ?? order.costPriceTotal ?? order.basePrice ?? 0);
-        if (!subTotalCostPrice && Array.isArray(order.items)) {
-          subTotalCostPrice = order.items.reduce((sum: number, item: any) => {
-            const itemCost = Number(item.costPrice ?? item.basePrice ?? item.price ?? 0);
-            const itemQty = Number(item.quantity ?? 1);
-            return sum + itemCost * itemQty;
-          }, 0);
-        }
-        if (!subTotalCostPrice) {
-          subTotalCostPrice = amount > shippingFee ? amount - shippingFee : amount;
-        }
-
-        // B. Chiết khấu món = % * giá món gốc
-        const itemFee = Math.round((subTotalCostPrice * platformFeePercent) / 100);
-
-        // C. Chiết khấu ship sàn giữ (Km + Giờ)
-        let createdDate = new Date();
-        if (order.createdAt?.toDate) createdDate = order.createdAt.toDate();
-        else if (order.createdAt?.seconds) createdDate = new Date(order.createdAt.seconds * 1000);
-        else if (order.createdAt) createdDate = new Date(order.createdAt);
-
-        const distanceKm = Number(order.distanceKm ?? order.distance ?? 0);
-        let shipFee = Number(order.shippingCut ?? 0);
-        if (shipFee === 0 && shippingFee > 0) {
-          shipFee = calculatePlatformShippingCut(distanceKm, createdDate);
-        }
-
-        platformProfit += itemFee + shipFee;
+      if (ACTIVE_STATUSES.has(status)) {
+        activeOrders += 1;
       }
 
-      recentOrders.push(order);
-    });
+      if (COMPLETED_STATUSES.has(status)) {
+        completedOrders += 1;
+      }
 
-    // Sắp xếp đơn mới nhất theo thời gian tạo
+      if (CANCELLED_STATUSES.has(status)) {
+        cancelledOrders += 1;
+      }
+
+      if (REFUNDED_STATUSES.has(status)) {
+        refundedOrders += 1;
+      }
+
+      /*
+       * Giữ dữ liệu order gần như nguyên bản cho bảng
+       * "Đơn hàng mới nhất".
+       *
+       * Không thêm platformProfit / shippingCut / commission
+       * vì Dashboard không còn là nơi tính tài chính.
+       */
+      recentOrders.push({
+        id: orderDoc.id,
+        ...data,
+        createdAt: serializeCreatedAt(data?.createdAt),
+      });
+    }
+
     recentOrders.sort((a, b) => {
-      const timeA = a.createdAt?.seconds || (a.createdAt ? new Date(a.createdAt).getTime() / 1000 : 0);
-      const timeB = b.createdAt?.seconds || (b.createdAt ? new Date(b.createdAt).getTime() / 1000 : 0);
+      const timeA = parseDate(a?.createdAt).getTime();
+      const timeB = parseDate(b?.createdAt).getTime();
       return timeB - timeA;
     });
 
-    // Thống kê Gian hàng chờ duyệt
+    /* =====================================================
+       MERCHANT STATUS
+    ===================================================== */
+
     let pendingMerchants = 0;
-    merchantsSnap.docs.forEach((doc) => {
-      const st = (doc.data().status || "").toString().toLowerCase().trim();
-      if (st === "pending") pendingMerchants += 1;
-    });
+    let activeMerchants = 0;
+
+    for (const merchantDoc of merchantsSnap.docs) {
+      const merchant = merchantDoc.data();
+      const status = normalizeStatus(merchant?.status);
+
+      if (status === "pending") {
+        pendingMerchants += 1;
+      }
+
+      if (
+        status === "approved" ||
+        status === "active" ||
+        status === "verified"
+      ) {
+        activeMerchants += 1;
+      }
+    }
 
     return NextResponse.json({
       success: true,
       data: {
         stats: {
-          totalGMV,
-          platformProfit,
-          platformFeePercent,
-          shippingFeePercent,
-          totalMerchants: merchantsSnap.size,
-          pendingMerchants,
+          /* Operation only */
           totalOrders: ordersSnap.size,
           pendingOrders,
+          activeOrders,
+          completedOrders,
+          cancelledOrders,
+          refundedOrders,
+
+          totalMerchants: merchantsSnap.size,
+          pendingMerchants,
+          activeMerchants,
+
           totalUsers: usersSnap.size,
           totalProducts: productsSnap.size,
         },
-        recentOrders: recentOrders.slice(0, 5), // Top 5 đơn hàng mới nhất
+
+        recentOrders: recentOrders.slice(0, 5),
       },
     });
   } catch (error: any) {
     console.error("Lỗi Dashboard API:", error);
-    return NextResponse.json({ success: false, message: error.message }, { status: 500 });
+
+    return NextResponse.json(
+      {
+        success: false,
+        message:
+          error?.message ||
+          "Lỗi Dashboard API",
+      },
+      {
+        status: 500,
+      }
+    );
   }
 }

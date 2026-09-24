@@ -39,6 +39,11 @@ export default function ProfilePage() {
     vehicleType: "MOTORBIKE",
     identityCardNumber: "",
     avatarUrl: "",
+
+    // 🏦 Tài khoản nhận thanh toán T+1 từ Sàn
+    bankName: "",
+    accountNumber: "",
+    accountHolder: "",
   });
 
   // LẤY DỮ LIỆU ĐÁNH GIÁ & ĐƠN HÀNG THỰC TẾ
@@ -100,6 +105,8 @@ export default function ProfilePage() {
 
   const handleOpenEditModal = () => {
     if (profile) {
+      const bankAccount = (profile as any)?.bankAccount || {};
+
       setFormData({
         fullName: profile.fullName || "",
         phone: profile.phone || "",
@@ -107,6 +114,21 @@ export default function ProfilePage() {
         vehicleType: profile.vehicleType || "MOTORBIKE",
         identityCardNumber: profile.identityCardNumber || "",
         avatarUrl: profile.avatarUrl || "",
+
+        // Ưu tiên object bankAccount, fallback field legacy để tương thích dữ liệu cũ
+        bankName:
+          bankAccount.bankName ||
+          (profile as any)?.bankName ||
+          "",
+        accountNumber:
+          bankAccount.accountNumber ||
+          (profile as any)?.accountNumber ||
+          "",
+        accountHolder:
+          bankAccount.accountHolder ||
+          (profile as any)?.accountHolder ||
+          (profile as any)?.bankOwner ||
+          "",
       });
       setIsEditing(true);
     }
@@ -156,6 +178,37 @@ export default function ProfilePage() {
     e.preventDefault();
     if (!profile?.uid) return;
 
+    const bankName = formData.bankName.trim();
+    const accountNumber = formData.accountNumber.replace(/\s+/g, "").trim();
+    const accountHolder = formData.accountHolder.trim().toUpperCase();
+
+    const hasAnyBankField =
+      Boolean(bankName) ||
+      Boolean(accountNumber) ||
+      Boolean(accountHolder);
+
+    // Nếu Shipper bắt đầu nhập thông tin thanh toán thì phải nhập đủ 3 trường.
+    if (
+      hasAnyBankField &&
+      (!bankName || !accountNumber || !accountHolder)
+    ) {
+      alert(
+        "Vui lòng nhập đầy đủ Tên ngân hàng, Số tài khoản và Tên chủ tài khoản."
+      );
+      return;
+    }
+
+    // STK lưu dạng string để không mất số 0 ở đầu.
+    if (
+      accountNumber &&
+      !/^\d{6,20}$/.test(accountNumber)
+    ) {
+      alert(
+        "Số tài khoản ngân hàng phải gồm 6–20 chữ số."
+      );
+      return;
+    }
+
     setIsSaving(true);
     try {
       const docRef = doc(db, "shippers", profile.uid);
@@ -166,6 +219,24 @@ export default function ProfilePage() {
         vehicleType: formData.vehicleType,
         identityCardNumber: formData.identityCardNumber,
         avatarUrl: formData.avatarUrl,
+
+        // =====================================================
+        // 🏦 TÀI KHOẢN NHẬN THANH TOÁN T+1
+        // Accounting API đọc trực tiếp cấu trúc này.
+        // =====================================================
+        bankAccount: {
+          bankName,
+          accountNumber,
+          accountHolder,
+          updatedAt: new Date().toISOString(),
+        },
+
+        // Legacy fields để tương thích những màn hình/API cũ.
+        bankName,
+        accountNumber,
+        accountHolder,
+        bankOwner: accountHolder,
+
         updatedAt: new Date().toISOString(),
       });
 
@@ -299,6 +370,38 @@ export default function ProfilePage() {
   const isDepositPaid =
     (profile as any)?.isDepositPaid === true ||
     (profile as any)?.depositStatus === "PAID";
+
+  // ============================================================
+  // 🏦 TÀI KHOẢN NHẬN THANH TOÁN
+  // ============================================================
+  const payoutBank = (profile as any)?.bankAccount || {};
+
+  const payoutBankName =
+    payoutBank.bankName ||
+    (profile as any)?.bankName ||
+    "";
+
+  const payoutAccountNumber =
+    String(
+      payoutBank.accountNumber ||
+        (profile as any)?.accountNumber ||
+        ""
+    ).trim();
+
+  const payoutAccountHolder =
+    payoutBank.accountHolder ||
+    (profile as any)?.accountHolder ||
+    (profile as any)?.bankOwner ||
+    "";
+
+  const hasPayoutBank =
+    Boolean(payoutBankName) &&
+    Boolean(payoutAccountNumber) &&
+    Boolean(payoutAccountHolder);
+
+  const maskedAccountNumber = payoutAccountNumber
+    ? `•••• ${payoutAccountNumber.slice(-4)}`
+    : "Chưa cập nhật";
 
   return (
     <div className="h-screen w-full bg-slate-100 flex items-center justify-center font-sans overflow-hidden">
@@ -490,6 +593,78 @@ export default function ProfilePage() {
             </div>
           </div>
 
+          {/* 🏦 Tài khoản nhận thanh toán T+1 */}
+          <div className="bg-white rounded-3xl p-4 border border-slate-100 shadow-xs space-y-3">
+            <div className="flex items-center justify-between px-1">
+              <div>
+                <h3 className="text-[11px] font-extrabold text-slate-400 uppercase tracking-wider">
+                  Tài khoản nhận thanh toán
+                </h3>
+                <p className="text-[10px] text-slate-400 mt-0.5">
+                  Sàn sử dụng tài khoản này để chi trả đối soát T+1.
+                </p>
+              </div>
+
+              <span
+                className={`text-[10px] font-extrabold px-2.5 py-1 rounded-full border ${
+                  hasPayoutBank
+                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                    : "bg-amber-50 text-amber-700 border-amber-200"
+                }`}
+              >
+                {hasPayoutBank ? "✓ Đã thiết lập" : "⚠ Chưa thiết lập"}
+              </span>
+            </div>
+
+            {hasPayoutBank ? (
+              <div className="bg-emerald-50/60 border border-emerald-100 rounded-2xl p-3.5">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-white border border-emerald-100 flex items-center justify-center text-lg shadow-xs shrink-0">
+                    🏦
+                  </div>
+
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-black text-slate-800 truncate">
+                      {payoutBankName}
+                    </p>
+
+                    <p className="font-mono text-sm font-black text-emerald-700 mt-0.5 tracking-wide">
+                      {maskedAccountNumber}
+                    </p>
+
+                    <p className="text-[10px] text-slate-500 font-bold uppercase truncate mt-0.5">
+                      {payoutAccountHolder}
+                    </p>
+                  </div>
+                </div>
+
+                <p className="text-[10px] text-emerald-700/80 mt-3 leading-relaxed">
+                  Kiểm tra kỹ thông tin trước ngày đối soát. Tiền sẽ được chuyển
+                  theo tài khoản đã lưu trên hệ thống.
+                </p>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleOpenEditModal}
+                className="w-full text-left bg-amber-50 hover:bg-amber-100/80 border border-amber-200 rounded-2xl p-3.5 transition cursor-pointer"
+              >
+                <div className="flex items-start gap-2.5">
+                  <span className="text-lg">⚠️</span>
+                  <div>
+                    <p className="text-xs font-extrabold text-amber-800">
+                      Chưa có tài khoản nhận tiền
+                    </p>
+                    <p className="text-[10px] text-amber-700/80 mt-1 leading-relaxed">
+                      Hãy bổ sung tài khoản ngân hàng để Sàn có thể thanh toán
+                      thu nhập T+1 cho bạn.
+                    </p>
+                  </div>
+                </div>
+              </button>
+            )}
+          </div>
+
           {/* Account Actions */}
           <div className="space-y-2 pt-2">
             <button
@@ -627,6 +802,87 @@ export default function ProfilePage() {
                       placeholder="Nhập 12 số CCCD"
                       required
                     />
+                  </div>
+
+                  {/* =================================================
+                      🏦 TÀI KHOẢN NHẬN THANH TOÁN T+1
+                  ================================================= */}
+                  <div className="bg-emerald-50/60 border border-emerald-200 rounded-2xl p-3.5 space-y-3">
+                    <div className="flex items-start gap-2">
+                      <span className="text-lg">🏦</span>
+                      <div>
+                        <h4 className="text-xs font-extrabold text-emerald-900">
+                          Tài khoản nhận thanh toán
+                        </h4>
+                        <p className="text-[10px] text-emerald-700/80 mt-0.5 leading-relaxed">
+                          Dùng để nhận tiền đối soát T+1 từ Sàn. Tên chủ tài
+                          khoản nên trùng với thông tin đăng ký của Shipper.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-extrabold text-slate-500 block mb-1 uppercase tracking-wider">
+                        Tên ngân hàng
+                      </label>
+                      <input
+                        type="text"
+                        value={formData.bankName}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            bankName: e.target.value,
+                          })
+                        }
+                        className="w-full bg-white border border-emerald-200 rounded-xl px-3.5 py-2.5 text-xs font-bold text-slate-800 focus:outline-none focus:border-emerald-500 transition"
+                        placeholder="Ví dụ: MB Bank, Vietcombank..."
+                        autoComplete="organization"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-extrabold text-slate-500 block mb-1 uppercase tracking-wider">
+                        Số tài khoản
+                      </label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={formData.accountNumber}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            accountNumber: e.target.value.replace(/\D/g, ""),
+                          })
+                        }
+                        className="w-full bg-white border border-emerald-200 rounded-xl px-3.5 py-2.5 text-xs font-black font-mono text-slate-800 focus:outline-none focus:border-emerald-500 transition"
+                        placeholder="Nhập số tài khoản ngân hàng"
+                        autoComplete="off"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-extrabold text-slate-500 block mb-1 uppercase tracking-wider">
+                        Tên chủ tài khoản
+                      </label>
+                      <input
+                        type="text"
+                        value={formData.accountHolder}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            accountHolder: e.target.value.toUpperCase(),
+                          })
+                        }
+                        className="w-full bg-white border border-emerald-200 rounded-xl px-3.5 py-2.5 text-xs font-black uppercase text-slate-800 focus:outline-none focus:border-emerald-500 transition"
+                        placeholder="NGUYEN VAN A"
+                        autoComplete="name"
+                      />
+                    </div>
+
+                    <p className="text-[10px] text-slate-500 leading-relaxed">
+                      🔐 Trên màn hình chính chỉ hiển thị 4 số cuối để hạn chế
+                      lộ thông tin tài khoản.
+                    </p>
                   </div>
                 </div>
 

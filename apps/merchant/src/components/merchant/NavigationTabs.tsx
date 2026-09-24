@@ -13,7 +13,7 @@ export default function NavigationTabs({ activeTab, setActiveTab, pendingCount }
     { id: "overview", label: "Tổng Quan", icon: "📊" },
     { id: "orders", label: `Đơn (${pendingCount})`, icon: "📦" },
     { id: "products", label: "Sản Phẩm", icon: "🍹" },
-    { id: "settings", label: "Cài Đặt", icon: "⚙️" },
+    { id: "settings", label: "Vouchers", icon: "⚙️" },
     { id: "account", label: "Tài Khoản", icon: "👤" },
   ];
 

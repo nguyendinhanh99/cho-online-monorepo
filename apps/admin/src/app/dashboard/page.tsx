@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import VoucherManagerModal from "@/components/VoucherManagerModal";
@@ -15,7 +15,28 @@ interface DashboardData {
   [key: string]: any;
 }
 
+interface RevenueSummary {
+  totalCustomerPaid?: number;
+  totalCustomerPaidBeforeVoucher?: number;
+  totalGMV?: number;
+  totalOriginalGMV?: number;
+  totalMerchantSaleGross?: number;
+  totalMerchantNet?: number;
+  totalShippingBaseFee?: number;
+  totalShippingPaidByCustomer?: number;
+  totalShippingVoucherDiscount?: number;
+  totalShipperTotalEarning?: number;
+  totalPlatformNetRevenue?: number;
+  netTotalRevenue?: number;
+  totalNetRevenue?: number;
+  totalOrders?: number;
+  [key: string]: any;
+}
+
 interface RevenueData {
+  summary?: RevenueSummary;
+  config?: Record<string, any>;
+  chartData?: any[];
   [key: string]: any;
 }
 
@@ -25,31 +46,38 @@ interface AccountingSummary {
   totalPartners: number;
 }
 
+type Tone =
+  | "emerald"
+  | "amber"
+  | "indigo"
+  | "cyan"
+  | "rose"
+  | "violet"
+  | "slate";
+
 // ============================================================
 // HELPERS
 // ============================================================
 
-const formatMoney = (value: any) => {
+const formatMoney = (value: unknown) => {
   const number = Number(value);
 
   if (!Number.isFinite(number)) {
     return "0đ";
   }
 
-  return `${number.toLocaleString("vi-VN")}đ`;
+  return `${Math.round(number).toLocaleString("vi-VN")}đ`;
 };
 
-const toNumber = (value: any, fallback = 0) => {
+const toNumber = (value: unknown, fallback = 0) => {
   const number = Number(value);
-
   return Number.isFinite(number) ? number : fallback;
 };
 
-const normalizeStatus = (status: any) => {
-  return String(status || "")
+const normalizeStatus = (status: unknown) =>
+  String(status || "")
     .toLowerCase()
     .trim();
-};
 
 const getOrderTimestamp = (value: any) => {
   if (!value) return 0;
@@ -58,78 +86,248 @@ const getOrderTimestamp = (value: any) => {
     return value.toDate().getTime();
   }
 
-  if (
-    typeof value === "string" ||
-    typeof value === "number"
-  ) {
+  if (typeof value === "string" || typeof value === "number") {
     const timestamp = new Date(value).getTime();
-
-    return Number.isFinite(timestamp)
-      ? timestamp
-      : 0;
+    return Number.isFinite(timestamp) ? timestamp : 0;
   }
 
   if (typeof value?.seconds === "number") {
     return value.seconds * 1000;
   }
 
+  if (typeof value?._seconds === "number") {
+    return value._seconds * 1000;
+  }
+
   return 0;
 };
 
-// ============================================================
-// ORDER FINANCIAL NORMALIZER
-// ============================================================
-//
-// QUY ƯỚC:
-//
-// subtotalPrice / subTotalPrice
-// = tiền món thực tế
-//
-// shippingFee
-// = phí giao hàng khách trả
-//
-// totalPrice
-// = tổng khách phải thanh toán
-//
-// platformProfit / platformFee
-// = phần sàn thực nhận nếu backend đã tính
-//
-// KHÔNG coi shippingFee là lợi nhuận sàn.
-// ============================================================
+const formatOrderTime = (value: any) => {
+  const timestamp = getOrderTimestamp(value);
+
+  if (!timestamp) return "—";
+
+  return new Date(timestamp).toLocaleString("vi-VN", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+};
 
 const getOrderFinancials = (order: any) => {
-  const subtotalPrice = toNumber(
-    order?.subTotalPrice ??
-      order?.subtotalPrice ??
-      order?.itemsTotal ??
-      0
+  const shippingFee = Math.max(
+    0,
+    toNumber(
+      order?.shippingFee ??
+        order?.shipFee ??
+        order?.deliveryFee ??
+        0
+    )
   );
 
-  const shippingFee = toNumber(
-    order?.shippingFee ??
-      0
+  const totalPrice = Math.max(
+    0,
+    toNumber(
+      order?.finalTotal ??
+        order?.finalPrice ??
+        order?.paidTotal ??
+        order?.totalPrice ??
+        order?.grandTotal ??
+        order?.total ??
+        order?.amount ??
+        0
+    )
   );
 
-  const totalPrice = toNumber(
-    order?.totalPrice ??
-      order?.grandTotal ??
-      order?.total ??
-      order?.amount ??
-      subtotalPrice + shippingFee
+  let subtotalPrice = Math.max(
+    0,
+    toNumber(
+      order?.subTotalPrice ??
+        order?.subtotalPrice ??
+        order?.itemsTotal ??
+        0
+    )
   );
 
-  const discountAmount = toNumber(
-    order?.discountAmount ??
+  if (subtotalPrice <= 0 && Array.isArray(order?.items)) {
+    subtotalPrice = order.items.reduce(
+      (sum: number, item: any) =>
+        sum +
+        Math.max(0, toNumber(item?.price ?? item?.salePrice ?? 0)) *
+          Math.max(1, toNumber(item?.quantity ?? 1)),
       0
-  );
+    );
+  }
+
+  if (subtotalPrice <= 0 && totalPrice > 0) {
+    subtotalPrice = Math.max(0, totalPrice - shippingFee);
+  }
 
   return {
     subtotalPrice,
     shippingFee,
     totalPrice,
-    discountAmount,
   };
 };
+
+const toneMap: Record<Tone, string> = {
+  emerald:
+    "border-emerald-500/25 bg-emerald-500/[0.06] text-emerald-300",
+  amber: "border-amber-500/25 bg-amber-500/[0.06] text-amber-300",
+  indigo:
+    "border-indigo-500/25 bg-indigo-500/[0.06] text-indigo-300",
+  cyan: "border-cyan-500/25 bg-cyan-500/[0.06] text-cyan-300",
+  rose: "border-rose-500/25 bg-rose-500/[0.06] text-rose-300",
+  violet:
+    "border-violet-500/25 bg-violet-500/[0.06] text-violet-300",
+  slate: "border-slate-700/70 bg-slate-800/40 text-slate-200",
+};
+
+// ============================================================
+// UI COMPONENTS
+// ============================================================
+
+function MetricCard({
+  title,
+  value,
+  icon,
+  helper,
+  tone = "slate",
+  href,
+  prominent = false,
+}: {
+  title: string;
+  value: string;
+  icon: string;
+  helper?: string;
+  tone?: Tone;
+  href?: string;
+  prominent?: boolean;
+}) {
+  const body = (
+    <div
+      className={`group h-full rounded-2xl border p-4 transition duration-200 hover:-translate-y-0.5 hover:border-slate-500/70 ${toneMap[tone]} ${
+        prominent ? "sm:p-5" : ""
+      }`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+            {title}
+          </p>
+
+          <p
+            className={`mt-2 font-black tracking-tight ${
+              prominent ? "text-2xl md:text-3xl" : "text-xl"
+            }`}
+          >
+            {value}
+          </p>
+        </div>
+
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-slate-950/35 text-lg">
+          {icon}
+        </span>
+      </div>
+
+      {helper ? (
+        <p className="mt-2 line-clamp-2 text-[10px] leading-4 text-slate-500">
+          {helper}
+        </p>
+      ) : null}
+    </div>
+  );
+
+  if (!href) return body;
+
+  return (
+    <Link href={href} className="block h-full">
+      {body}
+    </Link>
+  );
+}
+
+function MiniStat({
+  label,
+  value,
+  helper,
+  tone = "slate",
+}: {
+  label: string;
+  value: string;
+  helper?: string;
+  tone?: Tone;
+}) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/35 p-3">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
+          {label}
+        </span>
+        <span
+          className={`text-sm font-black ${
+            tone === "emerald"
+              ? "text-emerald-400"
+              : tone === "amber"
+                ? "text-amber-400"
+                : tone === "rose"
+                  ? "text-rose-400"
+                  : tone === "cyan"
+                    ? "text-cyan-400"
+                    : tone === "indigo"
+                      ? "text-indigo-400"
+                      : tone === "violet"
+                        ? "text-violet-400"
+                        : "text-slate-200"
+          }`}
+        >
+          {value}
+        </span>
+      </div>
+
+      {helper ? (
+        <p className="mt-1 text-[10px] text-slate-600">{helper}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function QuickLink({
+  href,
+  icon,
+  title,
+  helper,
+}: {
+  href: string;
+  icon: string;
+  title: string;
+  helper: string;
+}) {
+  return (
+    <Link
+      href={href}
+      className="group flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950/30 p-3 transition hover:border-indigo-500/40 hover:bg-slate-800/70"
+    >
+      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-slate-800 text-base transition group-hover:scale-105">
+        {icon}
+      </span>
+
+      <span className="min-w-0 flex-1">
+        <span className="block text-xs font-bold text-slate-200">
+          {title}
+        </span>
+        <span className="mt-0.5 block truncate text-[10px] text-slate-500">
+          {helper}
+        </span>
+      </span>
+
+      <span className="text-xs text-slate-600 transition group-hover:translate-x-0.5 group-hover:text-indigo-400">
+        →
+      </span>
+    </Link>
+  );
+}
 
 // ============================================================
 // DASHBOARD
@@ -138,151 +336,74 @@ const getOrderFinancials = (order: any) => {
 export default function DashboardPage() {
   const router = useRouter();
 
-  const [data, setData] =
-    useState<DashboardData | null>(null);
-
-  const [revenueData, setRevenueData] =
-    useState<RevenueData | null>(null);
-
+  const [data, setData] = useState<DashboardData | null>(null);
+  const [revenueData, setRevenueData] = useState<RevenueData | null>(null);
   const [accountingSummary, setAccountingSummary] =
     useState<AccountingSummary | null>(null);
 
-  const [loading, setLoading] =
-    useState(true);
-
-  const [isLoggingOut, setIsLoggingOut] =
-    useState(false);
-
-  const [isVoucherModalOpen, setIsVoucherModalOpen] =
-    useState(false);
+  const [loading, setLoading] = useState(true);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [isVoucherModalOpen, setIsVoucherModalOpen] = useState(false);
 
   // ==========================================================
   // FETCH ALL DATA
   // ==========================================================
 
-  const fetchAllData = useCallback(
-    async () => {
-      setLoading(true);
+  const fetchAllData = useCallback(async () => {
+    setLoading(true);
 
-      try {
-        const [
-          dashRes,
-          revRes,
-          accRes,
-        ] = await Promise.all([
-          fetch("/api/dashboard", {
-            cache: "no-store",
-          }),
+    try {
+      const [dashRes, revRes, accRes] = await Promise.all([
+        fetch("/api/dashboard", { cache: "no-store" }),
+        fetch("/api/revenue?timeFrame=ALL", { cache: "no-store" }),
+        fetch("/api/accounting?role=ALL", { cache: "no-store" }),
+      ]);
 
-          fetch(
-            "/api/revenue?timeFrame=DAY",
-            {
-              cache: "no-store",
-            }
-          ),
+      const [dashJson, revJson, accJson] = await Promise.all([
+        dashRes.json(),
+        revRes.json(),
+        accRes.json(),
+      ]);
 
-          fetch(
-            "/api/accounting?role=ALL",
-            {
-              cache: "no-store",
-            }
-          ),
-        ]);
+      setData(dashJson?.success ? dashJson.data || null : null);
+      setRevenueData(revJson?.success ? revJson.data || null : null);
 
-        const [
-          dashJson,
-          revJson,
-          accJson,
-        ] = await Promise.all([
-          dashRes.json(),
-          revRes.json(),
-          accRes.json(),
-        ]);
-
-        // ======================================================
-        // DASHBOARD
-        // ======================================================
-
-        if (dashJson?.success) {
-          setData(
-            dashJson.data || null
-          );
-        }
-
-        // ======================================================
-        // REVENUE
-        // ======================================================
-
-        if (revJson?.success) {
-          setRevenueData(
-            revJson.data || null
-          );
-        }
-
-        // ======================================================
-        // ACCOUNTING
-        // ======================================================
-
-        if (
-          accJson?.success &&
-          Array.isArray(accJson.data)
-        ) {
-          const partners =
-            accJson.data;
-
-          const unpaidPartners =
-            partners.filter(
-              (partner: any) =>
-                !partner?.isPaid
-            );
-
-          const unpaidCount =
-            unpaidPartners.length;
-
-          const totalUnpaidAmount =
-            unpaidPartners.reduce(
-              (
-                sum: number,
-                partner: any
-              ) =>
-                sum +
-                toNumber(
-                  partner?.unpaidAmount ??
-                    partner?.amountDue ??
-                    partner?.pendingAmount ??
-                    0
-                ),
-              0
-            );
-
-          setAccountingSummary({
-            unpaidCount,
-            totalUnpaidAmount,
-            totalPartners:
-              partners.length,
-          });
-        } else {
-          setAccountingSummary({
-            unpaidCount: 0,
-            totalUnpaidAmount: 0,
-            totalPartners: 0,
-          });
-        }
-      } catch (error) {
-        console.error(
-          "❌ Lỗi tải dữ liệu Dashboard:",
-          error
+      if (accJson?.success && Array.isArray(accJson.data)) {
+        const partners = accJson.data;
+        const unpaidPartners = partners.filter(
+          (partner: any) => !partner?.isPaid
         );
-      } finally {
-        setLoading(false);
-      }
-    },
-    []
-  );
 
-  // ==========================================================
-  // INITIAL LOAD
-  // ==========================================================
+        const totalUnpaidAmount = unpaidPartners.reduce(
+          (sum: number, partner: any) =>
+            sum +
+            toNumber(
+              partner?.unpaidAmount ??
+                partner?.amountDue ??
+                partner?.pendingAmount ??
+                0
+            ),
+          0
+        );
+
+        setAccountingSummary({
+          unpaidCount: unpaidPartners.length,
+          totalUnpaidAmount,
+          totalPartners: partners.length,
+        });
+      } else {
+        setAccountingSummary({
+          unpaidCount: 0,
+          totalUnpaidAmount: 0,
+          totalPartners: 0,
+        });
+      }
+    } catch (error) {
+      console.error("❌ Lỗi tải dữ liệu Dashboard:", error);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     fetchAllData();
@@ -293,42 +414,22 @@ export default function DashboardPage() {
   // ==========================================================
 
   const handleLogout = async () => {
-    if (
-      !confirm(
-        "Bạn có chắc chắn muốn đăng xuất khỏi hệ thống?"
-      )
-    ) {
+    if (!confirm("Bạn có chắc chắn muốn đăng xuất khỏi hệ thống?")) {
       return;
     }
 
     setIsLoggingOut(true);
 
     try {
-      await fetch(
-        "/api/auth/logout",
-        {
-          method: "POST",
-        }
-      ).catch(() => {});
+      await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
 
-      localStorage.removeItem(
-        "token"
-      );
-
-      localStorage.removeItem(
-        "user"
-      );
-
+      localStorage.removeItem("token");
+      localStorage.removeItem("user");
       sessionStorage.clear();
 
-      window.location.href =
-        "/login";
+      window.location.href = "/login";
     } catch (error) {
-      console.error(
-        "❌ Lỗi đăng xuất:",
-        error
-      );
-
+      console.error("❌ Lỗi đăng xuất:", error);
       router.push("/login");
     } finally {
       setIsLoggingOut(false);
@@ -336,320 +437,182 @@ export default function DashboardPage() {
   };
 
   // ==========================================================
-  // RAW DATA
+  // DATA
   // ==========================================================
 
   const stats = data?.stats || {};
 
-  const recentOrders =
-    Array.isArray(
-      data?.recentOrders
-    )
-      ? data.recentOrders
-      : [];
+  const recentOrders = useMemo(() => {
+    if (!Array.isArray(data?.recentOrders)) return [];
 
-  // ==========================================================
-  // DERIVED FINANCIAL DATA
-  // ==========================================================
+    return [...data.recentOrders]
+      .sort(
+        (a, b) =>
+          getOrderTimestamp(b?.createdAt) - getOrderTimestamp(a?.createdAt)
+      )
+      .slice(0, 5);
+  }, [data?.recentOrders]);
 
-  const financialSummary = useMemo(() => {
-    // --------------------------------------------------------
-    // PLATFORM PROFIT
-    // --------------------------------------------------------
-
-    const platformProfit = toNumber(
-      stats.platformProfit ??
-        stats.netPlatformProfit ??
-        stats.platformRevenue ??
-        revenueData?.platformProfit ??
-        revenueData?.netProfit ??
-        0
-    );
-
-    // --------------------------------------------------------
-    // GMV
-    // --------------------------------------------------------
-
-    const totalGMV = toNumber(
-      stats.totalGMV ??
-        stats.gmv ??
-        revenueData?.totalGMV ??
-        revenueData?.gmv ??
-        0
-    );
-
-    // --------------------------------------------------------
-    // PRODUCT SALES
-    // --------------------------------------------------------
-
-    const totalProductSales =
-      toNumber(
-        stats.totalProductSales ??
-          stats.totalSubtotal ??
-          stats.subTotalPrice ??
-          stats.productRevenue ??
-          revenueData?.totalProductSales ??
-          revenueData?.productRevenue ??
-          0
-      );
-
-    // --------------------------------------------------------
-    // SHIPPING COLLECTED
-    // --------------------------------------------------------
-    //
-    // Đây chỉ là tiền phí ship khách trả.
-    // KHÔNG gọi đây là lợi nhuận sàn.
-    //
-
-    const totalShippingCollected =
-      toNumber(
-        stats.totalShippingFee ??
-          stats.shippingRevenue ??
-          stats.totalShippingCollected ??
-          revenueData?.totalShippingFee ??
-          revenueData?.shippingRevenue ??
-          0
-      );
-
-    // --------------------------------------------------------
-    // ORDERS
-    // --------------------------------------------------------
-
-    const totalOrders = toNumber(
-      stats.totalOrders ??
-        0
-    );
-
-    const pendingOrders =
-      toNumber(
-        stats.pendingOrders ??
-          stats.pending ??
-          0
-      );
-
-    const completedOrders =
-      toNumber(
-        stats.completedOrders ??
-          stats.completed ??
-          0
-      );
-
-    const cancelledOrders =
-      toNumber(
-        stats.cancelledOrders ??
-          stats.cancelled ??
-          0
-      );
-
-    // --------------------------------------------------------
-    // MERCHANTS
-    // --------------------------------------------------------
-
-    const totalMerchants =
-      toNumber(
-        stats.totalMerchants ??
-          0
-      );
-
-    const pendingMerchants =
-      toNumber(
-        stats.pendingMerchants ??
-          0
-      );
+  const summary = useMemo(() => {
+    const revenueSummary = revenueData?.summary ?? {};
 
     return {
-      platformProfit,
-      totalGMV,
-      totalProductSales,
-      totalShippingCollected,
-      totalOrders,
-      pendingOrders,
-      completedOrders,
-      cancelledOrders,
-      totalMerchants,
-      pendingMerchants,
+      platformNetRevenue: Math.max(
+        0,
+        toNumber(
+          revenueSummary.totalPlatformNetRevenue ??
+            revenueSummary.netTotalRevenue ??
+            revenueSummary.totalNetRevenue ??
+            0
+        )
+      ),
+
+      totalCustomerPaid: Math.max(
+        0,
+        toNumber(revenueSummary.totalCustomerPaid ?? 0)
+      ),
+
+      totalProductSales: Math.max(
+        0,
+        toNumber(
+          revenueSummary.totalMerchantSaleGross ??
+            revenueSummary.totalGMV ??
+            revenueSummary.totalSubTotalPrice ??
+            0
+        )
+      ),
+
+      totalShippingPaidByCustomer: Math.max(
+        0,
+        toNumber(revenueSummary.totalShippingPaidByCustomer ?? 0)
+      ),
+
+      totalShipperEarning: Math.max(
+        0,
+        toNumber(revenueSummary.totalShipperTotalEarning ?? 0)
+      ),
+
+      totalOrders: toNumber(stats.totalOrders ?? 0),
+      pendingOrders: toNumber(stats.pendingOrders ?? stats.pending ?? 0),
+      completedOrders: toNumber(stats.completedOrders ?? stats.completed ?? 0),
+      cancelledOrders: toNumber(stats.cancelledOrders ?? stats.cancelled ?? 0),
+
+      totalMerchants: toNumber(stats.totalMerchants ?? 0),
+      pendingMerchants: toNumber(stats.pendingMerchants ?? 0),
+      totalUsers: toNumber(stats.totalUsers ?? 0),
+      totalProducts: toNumber(stats.totalProducts ?? 0),
     };
-  }, [
-    stats,
-    revenueData,
-  ]);
+  }, [revenueData, stats]);
 
-  // ==========================================================
-  // RECENT ORDER SUMMARY
-  // ==========================================================
+  const recentOrderSummary = useMemo(
+    () =>
+      recentOrders.map((order: any) => ({
+        order,
+        ...getOrderFinancials(order),
+      })),
+    [recentOrders]
+  );
 
-  const recentOrderSummary =
-    useMemo(() => {
-      return recentOrders.map(
-        (order: any) => {
-          const money =
-            getOrderFinancials(
-              order
-            );
-
-          return {
-            order,
-            ...money,
-          };
-        }
-      );
-    }, [recentOrders]);
+  const completionRate =
+    summary.totalOrders > 0
+      ? Math.round((summary.completedOrders / summary.totalOrders) * 100)
+      : 0;
 
   // ==========================================================
   // STATUS BADGE
   // ==========================================================
 
-  const getStatusBadge = (
-    status: string
-  ) => {
-    const st =
-      normalizeStatus(status);
+  const getStatusBadge = (status: string) => {
+    const st = normalizeStatus(status);
 
-    switch (st) {
-      case "pending":
-      case "finding_driver":
-        return (
-          <span className="bg-amber-500/10 text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded-full font-bold text-[10px]">
-            Chờ xử lý
-          </span>
-        );
+    const styles: Record<string, { label: string; className: string }> = {
+      pending: {
+        label: "Chờ xử lý",
+        className:
+          "border-amber-500/30 bg-amber-500/10 text-amber-400",
+      },
+      finding_driver: {
+        label: "Tìm shipper",
+        className:
+          "border-amber-500/30 bg-amber-500/10 text-amber-400",
+      },
+      accepted: {
+        label: "Shop đã nhận",
+        className: "border-cyan-500/30 bg-cyan-500/10 text-cyan-400",
+      },
+      preparing: {
+        label: "Đang làm",
+        className:
+          "border-orange-500/30 bg-orange-500/10 text-orange-400",
+      },
+      processing: {
+        label: "Đang làm",
+        className:
+          "border-orange-500/30 bg-orange-500/10 text-orange-400",
+      },
+      ready: {
+        label: "Chờ lấy món",
+        className: "border-teal-500/30 bg-teal-500/10 text-teal-400",
+      },
+      ready_for_pickup: {
+        label: "Chờ lấy món",
+        className: "border-teal-500/30 bg-teal-500/10 text-teal-400",
+      },
+      assigned: {
+        label: "Đã gán Shipper",
+        className:
+          "border-indigo-500/30 bg-indigo-500/10 text-indigo-400",
+      },
+      picking_up: {
+        label: "Đang lấy món",
+        className: "border-blue-500/30 bg-blue-500/10 text-blue-400",
+      },
+      delivering: {
+        label: "Đang giao",
+        className: "border-blue-500/30 bg-blue-500/10 text-blue-400",
+      },
+      shipping: {
+        label: "Đang giao",
+        className: "border-blue-500/30 bg-blue-500/10 text-blue-400",
+      },
+      completed: {
+        label: "Hoàn thành",
+        className:
+          "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
+      },
+      delivered: {
+        label: "Hoàn thành",
+        className:
+          "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
+      },
+      cancelled: {
+        label: "Đã hủy",
+        className: "border-rose-500/30 bg-rose-500/10 text-rose-400",
+      },
+      refunded: {
+        label: "Đã hoàn tiền",
+        className:
+          "border-purple-500/30 bg-purple-500/10 text-purple-400",
+      },
+    };
 
-      case "accepted":
-        return (
-          <span className="bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 px-2 py-0.5 rounded-full font-bold text-[10px]">
-            Shop đã nhận
-          </span>
-        );
+    const item = styles[st];
 
-      case "preparing":
-      case "processing":
-        return (
-          <span className="bg-orange-500/10 text-orange-400 border border-orange-500/30 px-2 py-0.5 rounded-full font-bold text-[10px]">
-            Đang làm
-          </span>
-        );
-
-      case "ready":
-      case "ready_for_pickup":
-        return (
-          <span className="bg-teal-500/10 text-teal-400 border border-teal-500/30 px-2 py-0.5 rounded-full font-bold text-[10px]">
-            Chờ lấy món
-          </span>
-        );
-
-      case "assigned":
-        return (
-          <span className="bg-indigo-500/10 text-indigo-400 border border-indigo-500/30 px-2 py-0.5 rounded-full font-bold text-[10px]">
-            Đã gán Shipper
-          </span>
-        );
-
-      case "picking_up":
-      case "delivering":
-      case "shipping":
-        return (
-          <span className="bg-blue-500/10 text-blue-400 border border-blue-500/30 px-2 py-0.5 rounded-full font-bold text-[10px]">
-            Đang giao
-          </span>
-        );
-
-      case "completed":
-      case "delivered":
-        return (
-          <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold text-[10px]">
-            Hoàn thành
-          </span>
-        );
-
-      case "cancelled":
-        return (
-          <span className="bg-rose-500/10 text-rose-400 border border-rose-500/30 px-2 py-0.5 rounded-full font-bold text-[10px]">
-            Đã hủy
-          </span>
-        );
-
-      case "refunded":
-        return (
-          <span className="bg-purple-500/10 text-purple-400 border border-purple-500/30 px-2 py-0.5 rounded-full font-bold text-[10px]">
-            Đã hoàn tiền
-          </span>
-        );
-
-      default:
-        return (
-          <span className="bg-slate-700 text-slate-300 px-2 py-0.5 rounded-full font-bold text-[10px]">
-            {status || "Không rõ"}
-          </span>
-        );
-    }
-  };
-
-  // ==========================================================
-  // KPI CARD
-  // ==========================================================
-
-  const KpiCard = ({
-    href,
-    icon,
-    title,
-    value,
-    description,
-    valueClassName,
-    className,
-  }: {
-    href?: string;
-    icon: string;
-    title: string;
-    value: string;
-    description: string;
-    valueClassName?: string;
-    className?: string;
-  }) => {
-    const content = (
-      <div
-        className={`group h-full bg-slate-800/60 border border-slate-700/60 hover:border-slate-500 p-5 rounded-2xl backdrop-blur-md transition duration-200 ${
-          className || ""
-        }`}
-      >
-        <div className="flex justify-between items-center text-slate-400 mb-2">
-          <span className="text-xs font-semibold group-hover:text-white transition">
-            {title}
-          </span>
-
-          <span className="text-lg">
-            {icon}
-          </span>
-        </div>
-
-        <div
-          className={`text-xl font-black ${
-            valueClassName ||
-            "text-white"
-          }`}
-        >
-          {loading
-            ? "..."
-            : value}
-        </div>
-
-        <p className="text-[10px] text-slate-500 mt-1 leading-relaxed">
-          {description}
-        </p>
-      </div>
-    );
-
-    if (href) {
+    if (!item) {
       return (
-        <Link
-          href={href}
-          className="block h-full"
-        >
-          {content}
-        </Link>
+        <span className="rounded-full border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-bold text-slate-300">
+          {status || "Không rõ"}
+        </span>
       );
     }
 
-    return content;
+    return (
+      <span
+        className={`rounded-full border px-2 py-1 text-[10px] font-bold ${item.className}`}
+      >
+        {item.label}
+      </span>
+    );
   };
 
   // ==========================================================
@@ -657,666 +620,409 @@ export default function DashboardPage() {
   // ==========================================================
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 p-6 md:p-8 space-y-8 font-sans">
-      {/* ======================================================
-          HEADER
-      ======================================================= */}
+    <div className="min-h-screen bg-[#070b14] text-slate-100">
+      <div className="mx-auto max-w-[1600px] space-y-6 px-4 py-5 sm:px-6 lg:px-8">
+        {/* =====================================================
+            HEADER
+        ====================================================== */}
 
-      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 border-b border-slate-800 pb-5">
-        <div>
-          <h1 className="text-2xl md:text-3xl font-black text-white tracking-tight flex items-center gap-2">
-            🚀 Trung Tâm Điều Hành Anvami
-          </h1>
+        <header className="flex flex-col gap-4 border-b border-slate-800/80 pb-5 xl:flex-row xl:items-center xl:justify-between">
+          <div className="min-w-0">
+            <div className="flex items-center gap-3">
+              <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl border border-indigo-500/25 bg-indigo-500/10 text-xl">
+                ◈
+              </div>
 
-          <p className="text-xs md:text-sm text-slate-400 mt-1">
-            Theo dõi hoạt động, dòng tiền,
-            đối soát và vận hành toàn hệ thống.
-          </p>
-        </div>
+              <div className="min-w-0">
+                <h1 className="truncate text-xl font-black tracking-tight text-white sm:text-2xl">
+                  Trung tâm điều hành Anvami
+                </h1>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Một màn hình cho tài chính, vận hành và việc cần xử lý.
+                </p>
+              </div>
+            </div>
+          </div>
 
-        <div className="flex items-center gap-3 self-start xl:self-auto flex-wrap">
-          <button
-            onClick={() =>
-              setIsVoucherModalOpen(true)
-            }
-            className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white font-semibold text-xs rounded-xl shadow-lg shadow-purple-600/30 transition flex items-center gap-2 cursor-pointer"
-          >
-            🎫 Tạo Voucher
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => setIsVoucherModalOpen(true)}
+              className="rounded-xl border border-violet-500/30 bg-violet-500/10 px-3.5 py-2 text-xs font-bold text-violet-300 transition hover:bg-violet-500/20"
+            >
+              🎫 Voucher
+            </button>
 
-          <button
-            onClick={fetchAllData}
-            disabled={loading}
-            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold text-xs rounded-xl shadow-lg shadow-indigo-600/30 transition flex items-center gap-2 cursor-pointer"
-          >
-            🔄{" "}
-            {loading
-              ? "Đang tải..."
-              : "Cập nhật dữ liệu"}
-          </button>
+            <button
+              onClick={fetchAllData}
+              disabled={loading}
+              className="rounded-xl border border-slate-700 bg-slate-800/70 px-3.5 py-2 text-xs font-bold text-slate-200 transition hover:border-indigo-500/40 hover:text-white disabled:opacity-50"
+            >
+              {loading ? "Đang tải..." : "↻ Cập nhật"}
+            </button>
 
-          <button
-            onClick={handleLogout}
-            disabled={isLoggingOut}
-            className="px-4 py-2 bg-rose-600/20 hover:bg-rose-600 disabled:opacity-50 text-rose-300 hover:text-white border border-rose-500/40 hover:border-rose-600 font-bold text-xs rounded-xl shadow-lg transition flex items-center gap-1.5 cursor-pointer"
-          >
-            🚪{" "}
-            {isLoggingOut
-              ? "Đang thoát..."
-              : "Đăng xuất"}
-          </button>
-        </div>
+            <button
+              onClick={handleLogout}
+              disabled={isLoggingOut}
+              className="rounded-xl border border-rose-500/20 bg-rose-500/[0.06] px-3.5 py-2 text-xs font-bold text-rose-300 transition hover:bg-rose-500/15 disabled:opacity-50"
+            >
+              {isLoggingOut ? "Đang thoát..." : "Đăng xuất"}
+            </button>
+          </div>
+        </header>
+
+        {/* =====================================================
+            PRIORITY KPIs
+        ====================================================== */}
+
+        <section>
+          <div className="mb-3 flex items-end justify-between gap-4">
+            <div>
+              <h2 className="text-sm font-black text-slate-200">
+                Tổng quan cần chú ý
+              </h2>
+              <p className="mt-1 text-[10px] text-slate-600">
+                Chỉ giữ các chỉ số ảnh hưởng trực tiếp đến quyết định vận hành.
+              </p>
+            </div>
+
+            <span className="text-[10px] font-semibold text-slate-600">
+              {loading ? "Đang đồng bộ" : "Toàn thời gian"}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <MetricCard
+              href="/revenue"
+              title="Sàn nhận thực"
+              value={loading ? "..." : formatMoney(summary.platformNetRevenue)}
+              icon="💎"
+              tone="emerald"
+              prominent
+              helper="Dòng tiền còn lại sau khi trả Quán và Shipper."
+            />
+
+            <MetricCard
+              href="/revenue"
+              title="Khách đã thanh toán"
+              value={loading ? "..." : formatMoney(summary.totalCustomerPaid)}
+              icon="💳"
+              tone="amber"
+              prominent
+              helper="Tổng tiền thực thu từ các đơn hoàn thành."
+            />
+
+            <MetricCard
+              href="/accounting"
+              title="Cần giải ngân"
+              value={
+                loading
+                  ? "..."
+                  : formatMoney(accountingSummary?.totalUnpaidAmount || 0)
+              }
+              icon="🧾"
+              tone="rose"
+              prominent
+              helper={`${accountingSummary?.unpaidCount || 0} đối tác đang chờ thanh toán.`}
+            />
+
+            <MetricCard
+              href="/orders"
+              title="Đơn cần xử lý"
+              value={loading ? "..." : String(summary.pendingOrders)}
+              icon="⏳"
+              tone="indigo"
+              prominent
+              helper={`${summary.completedOrders}/${summary.totalOrders} đơn đã hoàn tất.`}
+            />
+          </div>
+        </section>
+
+        {/* =====================================================
+            MONEY FLOW STRIP
+        ====================================================== */}
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900/55 p-4">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-xs font-black text-slate-300">
+                Dòng tiền hệ thống
+              </h2>
+              <p className="mt-0.5 text-[10px] text-slate-600">
+                Các thành phần tiền chính, không lặp lại KPI phía trên.
+              </p>
+            </div>
+
+            <Link
+              href="/revenue"
+              className="text-[10px] font-bold text-indigo-400 transition hover:text-indigo-300"
+            >
+              Mở báo cáo →
+            </Link>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <MiniStat
+              label="Tiền món"
+              value={loading ? "..." : formatMoney(summary.totalProductSales)}
+              tone="cyan"
+            />
+
+            <MiniStat
+              label="Phí ship khách trả"
+              value={
+                loading
+                  ? "..."
+                  : formatMoney(summary.totalShippingPaidByCustomer)
+              }
+              tone="indigo"
+            />
+
+            <MiniStat
+              label="Shipper nhận"
+              value={loading ? "..." : formatMoney(summary.totalShipperEarning)}
+              tone="violet"
+            />
+          </div>
+        </section>
+
+        {/* =====================================================
+            MAIN CONTENT
+        ====================================================== */}
+
+        <section className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.8fr)_minmax(340px,0.8fr)]">
+          {/* RECENT ORDERS */}
+
+          <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/55">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3.5">
+              <div>
+                <h2 className="text-xs font-black text-slate-200">
+                  Đơn hàng mới nhất
+                </h2>
+                <p className="mt-0.5 text-[10px] text-slate-600">
+                  Theo dõi nhanh 5 đơn gần nhất, không biến Dashboard thành trang Orders.
+                </p>
+              </div>
+
+              <Link
+                href="/orders"
+                className="shrink-0 text-[10px] font-bold text-indigo-400 hover:text-indigo-300"
+              >
+                Xem tất cả →
+              </Link>
+            </div>
+
+            {loading ? (
+              <div className="p-10 text-center text-xs text-slate-500">
+                Đang tải dữ liệu...
+              </div>
+            ) : recentOrderSummary.length === 0 ? (
+              <div className="p-10 text-center text-xs text-slate-500">
+                Chưa có đơn hàng nào
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[760px] text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-800 bg-slate-950/35 text-[9px] font-bold uppercase tracking-wide text-slate-600">
+                      <th className="px-4 py-2.5">Đơn hàng</th>
+                      <th className="px-3 py-2.5">Gian hàng</th>
+                      <th className="px-3 py-2.5 text-right">Tiền món</th>
+                      <th className="px-3 py-2.5 text-right">Phí ship</th>
+                      <th className="px-3 py-2.5 text-right">Khách trả</th>
+                      <th className="px-4 py-2.5 text-right">Trạng thái</th>
+                    </tr>
+                  </thead>
+
+                  <tbody className="divide-y divide-slate-800/70">
+                    {recentOrderSummary.map(
+                      ({ order, subtotalPrice, shippingFee, totalPrice }: any) => (
+                        <tr
+                          key={order.id}
+                          className="transition hover:bg-slate-800/35"
+                        >
+                          <td className="px-4 py-3">
+                            <div className="font-mono text-[11px] font-bold text-indigo-300">
+                              #{String(order.paymentCode || order.id || "N/A").slice(0, 12)}
+                            </div>
+                            <div className="mt-1 flex items-center gap-2 text-[10px] text-slate-600">
+                              <span>{formatOrderTime(order.createdAt)}</span>
+                              <span>•</span>
+                              <span className="max-w-[130px] truncate text-slate-500">
+                                {order.customerName ||
+                                  order.shippingAddress?.fullName ||
+                                  "Khách vãng lai"}
+                              </span>
+                            </div>
+                          </td>
+
+                          <td className="px-3 py-3 text-[11px] font-semibold text-slate-300">
+                            {order.storeName ||
+                              order.merchantName ||
+                              order.shopName ||
+                              "Gian hàng"}
+                          </td>
+
+                          <td className="px-3 py-3 text-right font-bold text-cyan-400">
+                            {formatMoney(subtotalPrice)}
+                          </td>
+
+                          <td className="px-3 py-3 text-right font-bold text-indigo-400">
+                            {formatMoney(shippingFee)}
+                          </td>
+
+                          <td className="px-3 py-3 text-right font-black text-white">
+                            {formatMoney(totalPrice)}
+                          </td>
+
+                          <td className="px-4 py-3 text-right">
+                            {getStatusBadge(order.status)}
+                          </td>
+                        </tr>
+                      )
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* OPERATIONS / QUICK ACCESS */}
+
+          <aside className="space-y-4">
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/55 p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <div>
+                  <h2 className="text-xs font-black text-slate-200">
+                    Vận hành
+                  </h2>
+                  <p className="mt-0.5 text-[10px] text-slate-600">
+                    Tình trạng hệ thống hiện tại.
+                  </p>
+                </div>
+
+                <span
+                  className={`rounded-full px-2 py-1 text-[10px] font-black ${
+                    summary.pendingOrders > 0 || summary.pendingMerchants > 0
+                      ? "bg-amber-500/10 text-amber-400"
+                      : "bg-emerald-500/10 text-emerald-400"
+                  }`}
+                >
+                  {summary.pendingOrders > 0 || summary.pendingMerchants > 0
+                    ? "Cần chú ý"
+                    : "Ổn định"}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <MiniStat
+                  label="Tổng đơn"
+                  value={loading ? "..." : String(summary.totalOrders)}
+                  helper={`${completionRate}% hoàn thành`}
+                  tone="indigo"
+                />
+
+                <MiniStat
+                  label="Đơn hủy"
+                  value={loading ? "..." : String(summary.cancelledOrders)}
+                  tone={summary.cancelledOrders > 0 ? "rose" : "slate"}
+                />
+
+                <MiniStat
+                  label="Gian hàng"
+                  value={loading ? "..." : String(summary.totalMerchants)}
+                  helper={
+                    summary.pendingMerchants > 0
+                      ? `${summary.pendingMerchants} chờ duyệt`
+                      : "Không có chờ duyệt"
+                  }
+                  tone={summary.pendingMerchants > 0 ? "amber" : "emerald"}
+                />
+
+                <MiniStat
+                  label="Sản phẩm"
+                  value={loading ? "..." : String(summary.totalProducts)}
+                  helper={`${summary.totalUsers} người dùng`}
+                  tone="cyan"
+                />
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/55 p-4">
+              <div className="mb-3">
+                <h2 className="text-xs font-black text-slate-200">
+                  Truy cập nhanh
+                </h2>
+                <p className="mt-0.5 text-[10px] text-slate-600">
+                  Điều hướng gọn, không lặp lại thành một khu vực KPI thứ hai.
+                </p>
+              </div>
+
+              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+                <QuickLink
+                  href="/revenue"
+                  icon="📊"
+                  title="Doanh thu"
+                  helper="Dòng tiền & chiết khấu"
+                />
+
+                <QuickLink
+                  href="/accounting"
+                  icon="🧾"
+                  title="Đối soát"
+                  helper="Công nợ & giải ngân"
+                />
+
+                <QuickLink
+                  href="/orders"
+                  icon="📦"
+                  title="Đơn hàng"
+                  helper="Theo dõi vận đơn"
+                />
+
+                <QuickLink
+                  href="/merchants"
+                  icon="🏪"
+                  title="Gian hàng"
+                  helper="Duyệt & quản lý shop"
+                />
+
+                <QuickLink
+                  href="/users"
+                  icon="👥"
+                  title="Người dùng"
+                  helper="Customer, Shipper, Admin"
+                />
+
+                <button
+                  onClick={() => setIsVoucherModalOpen(true)}
+                  className="group flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950/30 p-3 text-left transition hover:border-violet-500/40 hover:bg-slate-800/70"
+                >
+                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-slate-800 text-base transition group-hover:scale-105">
+                    🎫
+                  </span>
+
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-xs font-bold text-slate-200">
+                      Voucher
+                    </span>
+                    <span className="mt-0.5 block truncate text-[10px] text-slate-500">
+                      Tạo & quản lý ưu đãi
+                    </span>
+                  </span>
+
+                  <span className="text-xs text-slate-600 transition group-hover:text-violet-400">
+                    +
+                  </span>
+                </button>
+              </div>
+            </div>
+          </aside>
+        </section>
       </div>
 
-      {/* ======================================================
-          FINANCIAL OVERVIEW
-      ======================================================= */}
-
-      <section>
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-sm font-bold text-slate-300 uppercase tracking-wider">
-              Tài chính & Giao dịch
-            </h2>
-
-            <p className="text-[10px] text-slate-500 mt-1">
-              Phân biệt rõ tiền khách trả và phần
-              sàn thực nhận.
-            </p>
-          </div>
-
-          <span className="text-[10px] text-slate-500 font-bold">
-            {loading
-              ? "Đang đồng bộ..."
-              : "Dữ liệu hiện tại"}
-          </span>
-        </div>
-
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-          {/* ==================================================
-              PLATFORM PROFIT
-          =================================================== */}
-
-          <KpiCard
-            href="/revenue"
-            icon="💰"
-            title="Lợi nhuận Sàn"
-            value={formatMoney(
-              financialSummary.platformProfit
-            )}
-            valueClassName="text-emerald-400"
-            description="Phần sàn thực nhận theo dữ liệu doanh thu/kế toán."
-            className="bg-gradient-to-br from-slate-800/80 to-emerald-950/40 border-emerald-500/30 hover:border-emerald-400"
-          />
-
-          {/* ==================================================
-              GMV
-          =================================================== */}
-
-          <KpiCard
-            href="/revenue"
-            icon="📈"
-            title="GMV Tổng giao dịch"
-            value={formatMoney(
-              financialSummary.totalGMV
-            )}
-            valueClassName="text-amber-400"
-            description="Tổng giá trị các giao dịch, không đồng nghĩa lợi nhuận."
-          />
-
-          {/* ==================================================
-              PRODUCT SALES
-          =================================================== */}
-
-          <KpiCard
-            icon="🍜"
-            title="Tiền món"
-            value={formatMoney(
-              financialSummary.totalProductSales
-            )}
-            valueClassName="text-cyan-400"
-            description="Giá trị phần hàng/món của các đơn."
-          />
-
-          {/* ==================================================
-              SHIPPING
-          =================================================== */}
-
-          <KpiCard
-            icon="🛵"
-            title="Phí ship khách trả"
-            value={formatMoney(
-              financialSummary.totalShippingCollected
-            )}
-            valueClassName="text-indigo-400"
-            description="Phí vận chuyển khách thanh toán; không mặc định là lợi nhuận Sàn."
-          />
-
-          {/* ==================================================
-              ACCOUNTING
-          =================================================== */}
-
-          <KpiCard
-            href="/accounting"
-            icon="🧾"
-            title="Cần giải ngân"
-            value={formatMoney(
-              accountingSummary?.totalUnpaidAmount ||
-                0
-            )}
-            valueClassName="text-rose-400"
-            description={`${
-              accountingSummary?.unpaidCount ||
-              0
-            } đối tác đang chờ đối soát/thanh toán.`}
-            className="bg-gradient-to-br from-amber-950/40 to-slate-800/80 border-amber-500/30 hover:border-amber-400"
-          />
-        </div>
-      </section>
-
-      {/* ======================================================
-          OPERATION KPI
-      ======================================================= */}
-
-      <section>
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-sm font-bold text-slate-300 uppercase tracking-wider">
-              Vận hành hệ thống
-            </h2>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          {/* MERCHANT */}
-
-          <KpiCard
-            href="/merchants"
-            icon="🏪"
-            title="Tổng gian hàng"
-            value={String(
-              financialSummary.totalMerchants
-            )}
-            valueClassName="text-white"
-            description={
-              financialSummary.pendingMerchants >
-              0
-                ? `⚠️ ${financialSummary.pendingMerchants} shop đang chờ duyệt.`
-                : "Không có shop chờ duyệt."
-            }
-          />
-
-          {/* ORDERS */}
-
-          <KpiCard
-            href="/orders"
-            icon="📦"
-            title="Tổng đơn hàng"
-            value={String(
-              financialSummary.totalOrders
-            )}
-            valueClassName="text-indigo-400"
-            description={`Đã hoàn tất: ${financialSummary.completedOrders}.`}
-          />
-
-          {/* PENDING */}
-
-          <KpiCard
-            href="/orders"
-            icon="⏳"
-            title="Đơn cần xử lý"
-            value={String(
-              financialSummary.pendingOrders
-            )}
-            valueClassName="text-amber-400"
-            description="Theo trạng thái pending đang được API Dashboard trả về."
-          />
-
-          {/* CANCELLED */}
-
-          <KpiCard
-            href="/orders"
-            icon="🚫"
-            title="Đơn đã hủy"
-            value={String(
-              financialSummary.cancelledOrders
-            )}
-            valueClassName="text-rose-400"
-            description="Theo dõi riêng để kiểm soát chất lượng vận hành."
-          />
-        </div>
-      </section>
-
-      {/* ======================================================
-          QUICK MANAGEMENT
-      ======================================================= */}
-
-      <section>
-        <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">
-          Trung tâm quản lý
-        </h2>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
-          {/* ACCOUNTING */}
-
-          <Link
-            href="/accounting"
-            className="group p-5 bg-amber-950/30 hover:bg-amber-900/40 border border-amber-500/40 hover:border-amber-400 rounded-2xl transition duration-200"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-2xl p-3 bg-amber-500/20 text-amber-300 rounded-xl group-hover:scale-110 transition">
-                🧾
-              </span>
-
-              <span className="text-xs text-amber-300 font-bold opacity-0 group-hover:opacity-100 transition">
-                Mở →
-              </span>
-            </div>
-
-            <h3 className="font-bold text-white text-base mt-4">
-              Kế Toán & Đối Soát
-            </h3>
-
-            <p className="text-xs text-slate-300 mt-1">
-              Theo dõi công nợ Merchant và Shipper,
-              xác nhận thanh toán và đối soát.
-            </p>
-          </Link>
-
-          {/* REVENUE */}
-
-          <Link
-            href="/revenue"
-            className="group p-5 bg-indigo-950/40 hover:bg-indigo-900/50 border border-indigo-500/40 hover:border-indigo-400 rounded-2xl transition duration-200"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-2xl p-3 bg-indigo-500/20 text-indigo-300 rounded-xl group-hover:scale-110 transition">
-                💎
-              </span>
-
-              <span className="text-xs text-indigo-300 font-bold opacity-0 group-hover:opacity-100 transition">
-                Chi tiết →
-              </span>
-            </div>
-
-            <h3 className="font-bold text-white text-base mt-4">
-              Báo Cáo Doanh Thu
-            </h3>
-
-            <p className="text-xs text-slate-300 mt-1">
-              Phân tích GMV, doanh thu món, phí ship
-              và lợi nhuận Sàn.
-            </p>
-          </Link>
-
-          {/* VOUCHER */}
-
-          <button
-            onClick={() =>
-              setIsVoucherModalOpen(true)
-            }
-            className="group p-5 bg-purple-950/30 hover:bg-purple-900/40 border border-purple-500/40 hover:border-purple-400 rounded-2xl transition duration-200 text-left cursor-pointer"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-2xl p-3 bg-purple-500/20 text-purple-300 rounded-xl group-hover:scale-110 transition">
-                🎫
-              </span>
-
-              <span className="text-xs text-purple-300 font-bold opacity-0 group-hover:opacity-100 transition">
-                Tạo mới +
-              </span>
-            </div>
-
-            <h3 className="font-bold text-white text-base mt-4">
-              Khuyến Mãi & Voucher
-            </h3>
-
-            <p className="text-xs text-slate-300 mt-1">
-              Quản lý mã giảm giá và chiến dịch
-              marketing.
-            </p>
-          </button>
-
-          {/* USERS */}
-
-          <Link
-            href="/users"
-            className="group p-5 bg-slate-800/40 hover:bg-slate-800 border border-slate-700/60 hover:border-indigo-500/50 rounded-2xl transition duration-200"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-2xl p-3 bg-indigo-500/10 text-indigo-400 rounded-xl group-hover:scale-110 transition">
-                👥
-              </span>
-
-              <span className="text-xs text-indigo-400 font-bold opacity-0 group-hover:opacity-100 transition">
-                Truy cập →
-              </span>
-            </div>
-
-            <h3 className="font-bold text-slate-100 text-base mt-4">
-              Người Dùng & Phân Quyền
-            </h3>
-
-            <p className="text-xs text-slate-400 mt-1">
-              Quản lý Customer, Merchant, Shipper
-              và Admin.
-            </p>
-          </Link>
-
-          {/* MERCHANTS */}
-
-          <Link
-            href="/merchants"
-            className="group p-5 bg-slate-800/40 hover:bg-slate-800 border border-slate-700/60 hover:border-emerald-500/50 rounded-2xl transition duration-200"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-2xl p-3 bg-emerald-500/10 text-emerald-400 rounded-xl group-hover:scale-110 transition">
-                🏪
-              </span>
-
-              <span className="text-xs text-emerald-400 font-bold opacity-0 group-hover:opacity-100 transition">
-                Truy cập →
-              </span>
-            </div>
-
-            <h3 className="font-bold text-slate-100 text-base mt-4">
-              Cửa Hàng & Gian Hàng
-            </h3>
-
-            <p className="text-xs text-slate-400 mt-1">
-              Duyệt shop, quản lý gian hàng và
-              sản phẩm.
-            </p>
-          </Link>
-
-          {/* ORDERS */}
-
-          <Link
-            href="/orders"
-            className="group p-5 bg-slate-800/40 hover:bg-slate-800 border border-slate-700/60 hover:border-amber-500/50 rounded-2xl transition duration-200"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-2xl p-3 bg-amber-500/10 text-amber-400 rounded-xl group-hover:scale-110 transition">
-                📦
-              </span>
-
-              <span className="text-xs text-amber-400 font-bold opacity-0 group-hover:opacity-100 transition">
-                Truy cập →
-              </span>
-            </div>
-
-            <h3 className="font-bold text-slate-100 text-base mt-4">
-              Đơn Hàng & Vận Chuyển
-            </h3>
-
-            <p className="text-xs text-slate-400 mt-1">
-              Theo dõi vận đơn và xử lý các trường
-              hợp bất thường.
-            </p>
-          </Link>
-        </div>
-      </section>
-
-      {/* ======================================================
-          LATEST ORDERS
-      ======================================================= */}
-
-      <section className="bg-slate-800/50 border border-slate-700/60 rounded-2xl p-5 shadow-xl">
-        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 mb-4">
-          <div>
-            <h2 className="text-sm font-bold text-slate-200 flex items-center gap-2">
-              <span>⚡</span>
-              Đơn Hàng Mới Nhất
-            </h2>
-
-            <p className="text-[10px] text-slate-500 mt-0.5">
-              Tổng quan tiền món, phí giao hàng và
-              tổng thanh toán của từng đơn.
-            </p>
-          </div>
-
-          <Link
-            href="/orders"
-            className="text-xs font-semibold text-indigo-400 hover:underline"
-          >
-            Xem tất cả →
-          </Link>
-        </div>
-
-        {loading ? (
-          <div className="p-8 text-center text-xs text-slate-400">
-            Đang tải dữ liệu...
-          </div>
-        ) : recentOrderSummary.length ===
-          0 ? (
-          <div className="p-8 text-center text-xs text-slate-400">
-            Chưa có đơn hàng nào
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs border-collapse min-w-[900px]">
-              <thead>
-                <tr className="text-slate-400 font-bold border-b border-slate-700/80 uppercase text-[10px]">
-                  <th className="pb-3 pr-3">
-                    Mã Đơn
-                  </th>
-
-                  <th className="pb-3 pr-3">
-                    Khách Hàng
-                  </th>
-
-                  <th className="pb-3 pr-3">
-                    Gian Hàng
-                  </th>
-
-                  <th className="pb-3 pr-3 text-right">
-                    Tiền Món
-                  </th>
-
-                  <th className="pb-3 pr-3 text-right">
-                    Phí Ship
-                  </th>
-
-                  <th className="pb-3 pr-3 text-right">
-                    Tổng Đơn
-                  </th>
-
-                  <th className="pb-3">
-                    Trạng Thái
-                  </th>
-                </tr>
-              </thead>
-
-              <tbody className="divide-y divide-slate-700/40 text-slate-300">
-                {recentOrderSummary.map(
-                  ({
-                    order,
-                    subtotalPrice,
-                    shippingFee,
-                    totalPrice,
-                  }: any) => (
-                    <tr
-                      key={order.id}
-                      className="hover:bg-slate-700/20 transition"
-                    >
-                      {/* ORDER ID */}
-
-                      <td className="py-3 pr-3 font-mono text-indigo-300 font-bold">
-                        #
-                        {order.id
-                          ? order.id
-                              .slice(
-                                0,
-                                8
-                              )
-                          : "N/A"}
-                      </td>
-
-                      {/* CUSTOMER */}
-
-                      <td className="py-3 pr-3 font-medium">
-                        {order.customerName ||
-                          order.shippingAddress
-                            ?.fullName ||
-                          "Khách Vãng Lai"}
-                      </td>
-
-                      {/* MERCHANT */}
-
-                      <td className="py-3 pr-3 text-slate-400">
-                        {order.storeName ||
-                          order.merchantName ||
-                          order.shopName ||
-                          "Gian hàng"}
-                      </td>
-
-                      {/* PRODUCT MONEY */}
-
-                      <td className="py-3 pr-3 text-right font-bold text-cyan-400">
-                        {formatMoney(
-                          subtotalPrice
-                        )}
-                      </td>
-
-                      {/* SHIPPING */}
-
-                      <td className="py-3 pr-3 text-right font-bold text-indigo-400">
-                        {formatMoney(
-                          shippingFee
-                        )}
-                      </td>
-
-                      {/* TOTAL */}
-
-                      <td className="py-3 pr-3 text-right font-black text-emerald-400">
-                        {formatMoney(
-                          totalPrice
-                        )}
-                      </td>
-
-                      {/* STATUS */}
-
-                      <td className="py-3">
-                        {getStatusBadge(
-                          order.status
-                        )}
-                      </td>
-                    </tr>
-                  )
-                )}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-
-      {/* ======================================================
-          OPERATION SUMMARY
-      ======================================================= */}
-
-      <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* PLATFORM */}
-
-        <div className="bg-emerald-950/20 border border-emerald-500/20 rounded-2xl p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-[10px] uppercase tracking-wider font-bold text-emerald-400">
-                Phần Sàn
-              </p>
-
-              <p className="text-2xl font-black text-emerald-300 mt-1">
-                {loading
-                  ? "..."
-                  : formatMoney(
-                      financialSummary.platformProfit
-                    )}
-              </p>
-            </div>
-
-            <span className="text-3xl">
-              💎
-            </span>
-          </div>
-
-          <p className="text-[10px] text-slate-500 mt-2">
-            Đây mới là chỉ số cần theo dõi để
-            đánh giá hiệu quả kinh doanh của Sàn,
-            thay vì lấy tổng tiền đơn hàng.
-          </p>
-        </div>
-
-        {/* ORDERS */}
-
-        <div className="bg-blue-950/20 border border-blue-500/20 rounded-2xl p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-[10px] uppercase tracking-wider font-bold text-blue-400">
-                Đơn hoàn tất
-              </p>
-
-              <p className="text-2xl font-black text-blue-300 mt-1">
-                {loading
-                  ? "..."
-                  : financialSummary.completedOrders}
-              </p>
-            </div>
-
-            <span className="text-3xl">
-              ✅
-            </span>
-          </div>
-
-          <p className="text-[10px] text-slate-500 mt-2">
-            So sánh với tổng đơn để theo dõi tỷ lệ
-            hoàn thành và tình trạng vận hành.
-          </p>
-        </div>
-
-        {/* PAYABLE */}
-
-        <div className="bg-rose-950/20 border border-rose-500/20 rounded-2xl p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-[10px] uppercase tracking-wider font-bold text-rose-400">
-                Công nợ phải trả
-              </p>
-
-              <p className="text-2xl font-black text-rose-300 mt-1">
-                {loading
-                  ? "..."
-                  : formatMoney(
-                      accountingSummary?.totalUnpaidAmount ||
-                        0
-                    )}
-              </p>
-            </div>
-
-            <span className="text-3xl">
-              🧾
-            </span>
-          </div>
-
-          <p className="text-[10px] text-slate-500 mt-2">
-            {accountingSummary?.unpaidCount ||
-              0}{" "}
-            đối tác chưa được giải ngân/đối soát.
-          </p>
-        </div>
-      </section>
-
-      {/* ======================================================
-          VOUCHER MODAL
-      ======================================================= */}
-
       <VoucherManagerModal
-        isOpen={
-          isVoucherModalOpen
-        }
-        onClose={() =>
-          setIsVoucherModalOpen(
-            false
-          )
-        }
+        isOpen={isVoucherModalOpen}
+        onClose={() => setIsVoucherModalOpen(false)}
       />
     </div>
   );

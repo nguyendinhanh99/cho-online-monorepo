@@ -101,6 +101,11 @@ export default function AccountTab({ onLogout }: AccountTabProps) {
     address: "",
     shipperNote: "", // 🚚 Ô bổ sung ghi chú chi tiết cho shipper
     identityCardNumber: "",
+    bankAccount: {
+      bankName: "",
+      accountNumber: "",
+      accountHolder: "",
+    },
     status: "APPROVED" as AccountStatus,
     blockReason: "",
     isOpen: true,
@@ -214,6 +219,11 @@ export default function AccountTab({ onLogout }: AccountTabProps) {
                 address: cleanVietnameseAddress(data.address || ""),
                 shipperNote: data.shipperNote || "", // 🚚 Đọc trường shipperNote từ Firestore
                 identityCardNumber: data.identityCardNumber || data.idCardNumber || "",
+                bankAccount: {
+                  bankName: data.bankAccount?.bankName || data.bankName || "",
+                  accountNumber: data.bankAccount?.accountNumber || data.accountNumber || "",
+                  accountHolder: data.bankAccount?.accountHolder || data.accountHolder || data.bankOwner || "",
+                },
                 status: (data.status as AccountStatus) || "APPROVED",
                 blockReason: data.blockReason || "",
                 isOpen: data.isOpen !== undefined ? data.isOpen : true,
@@ -252,6 +262,11 @@ export default function AccountTab({ onLogout }: AccountTabProps) {
                 address: "",
                 shipperNote: "",
                 identityCardNumber: "",
+                bankAccount: {
+                  bankName: "",
+                  accountNumber: "",
+                  accountHolder: "",
+                },
                 status: "PENDING" as AccountStatus,
                 blockReason: "",
                 isOpen: true,
@@ -388,6 +403,26 @@ export default function AccountTab({ onLogout }: AccountTabProps) {
     e.preventDefault();
     if (!currentUser) return;
 
+    const bankName = tempInfo.bankAccount.bankName.trim();
+    const accountNumber = tempInfo.bankAccount.accountNumber.replace(/\s+/g, "").trim();
+    const accountHolder = tempInfo.bankAccount.accountHolder.trim();
+
+    const hasAnyBankInfo = Boolean(bankName || accountNumber || accountHolder);
+    const hasCompleteBankInfo = Boolean(bankName && accountNumber && accountHolder);
+
+    if (hasAnyBankInfo && !hasCompleteBankInfo) {
+      showToast(
+        "Vui lòng nhập đầy đủ Ngân hàng, Số tài khoản và Chủ tài khoản để Sàn có thể thanh toán.",
+        "error"
+      );
+      return;
+    }
+
+    if (accountNumber && accountNumber.length < 5) {
+      showToast("Số tài khoản ngân hàng chưa hợp lệ.", "error");
+      return;
+    }
+
     try {
       setSaving(true);
       const docRef = doc(db, "merchants", currentUser.uid);
@@ -408,6 +443,23 @@ export default function AccountTab({ onLogout }: AccountTabProps) {
           businessCategory: tempInfo.category,
           identityCardNumber: tempInfo.identityCardNumber,
           taxCode: tempInfo.taxCode,
+
+          // 🏦 Tài khoản nhận thanh toán T+1 từ Sàn
+          bankAccount: hasCompleteBankInfo
+            ? {
+                bankName,
+                accountNumber,
+                accountHolder,
+                updatedAt: new Date(),
+              }
+            : null,
+
+          // Legacy aliases để tương thích API Accounting hiện tại
+          bankName: hasCompleteBankInfo ? bankName : "",
+          accountNumber: hasCompleteBankInfo ? accountNumber : "",
+          accountHolder: hasCompleteBankInfo ? accountHolder : "",
+          bankOwner: hasCompleteBankInfo ? accountHolder : "",
+
           address: cleanedAddr,
           shipperNote: tempInfo.shipperNote, // 🚚 Lưu trường ghi chú cho shipper lên Firestore
           openTime: tempInfo.openTime,
@@ -725,6 +777,65 @@ export default function AccountTab({ onLogout }: AccountTabProps) {
           </div>
         </div>
 
+        {/* 🏦 TÀI KHOẢN NHẬN THANH TOÁN TỪ SÀN */}
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-3.5 space-y-2.5">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="font-bold text-emerald-900 text-xs flex items-center gap-1.5">
+                <span>🏦</span> Tài khoản nhận thanh toán
+              </p>
+              <p className="text-[10px] text-emerald-700/80 mt-0.5 leading-relaxed">
+                Sàn sử dụng tài khoản này để chuyển tiền đối soát T+1 cho cửa hàng.
+              </p>
+            </div>
+
+            {storeInfo.bankAccount.accountNumber ? (
+              <span className="shrink-0 px-2 py-0.5 rounded-full border border-emerald-200 bg-white text-emerald-700 text-[10px] font-bold">
+                ✓ Đã thiết lập
+              </span>
+            ) : (
+              <span className="shrink-0 px-2 py-0.5 rounded-full border border-amber-200 bg-amber-50 text-amber-700 text-[10px] font-bold">
+                Chưa thiết lập
+              </span>
+            )}
+          </div>
+
+          {storeInfo.bankAccount.accountNumber ? (
+            <div className="grid grid-cols-1 gap-1.5 bg-white/80 border border-emerald-100 rounded-lg p-3">
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-stone-500 text-[10px]">Ngân hàng</span>
+                <span className="font-bold text-stone-800 text-[11px] text-right">
+                  {storeInfo.bankAccount.bankName || "—"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-stone-500 text-[10px]">Số tài khoản</span>
+                <span className="font-mono font-bold text-emerald-700 text-[11px] tracking-wide">
+                  •••• {storeInfo.bankAccount.accountNumber.slice(-4)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-stone-500 text-[10px]">Chủ tài khoản</span>
+                <span className="font-bold text-stone-800 text-[11px] text-right uppercase">
+                  {storeInfo.bankAccount.accountHolder || "—"}
+                </span>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-dashed border-amber-300 bg-amber-50/70 px-3 py-2 text-[10px] text-amber-800 leading-relaxed">
+              ⚠️ Cửa hàng chưa có tài khoản nhận tiền. Hãy cập nhật trước kỳ đối soát để tránh chậm thanh toán.
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={handleOpenEdit}
+            className="w-full bg-white hover:bg-emerald-50 border border-emerald-200 text-emerald-800 font-bold py-2 rounded-lg transition cursor-pointer text-[11px]"
+          >
+            {storeInfo.bankAccount.accountNumber ? "Cập nhật tài khoản thanh toán" : "+ Thêm tài khoản thanh toán"}
+          </button>
+        </div>
+
         <button
           onClick={handleOpenEdit}
           className="w-full mt-2 bg-[#ee4d2d] hover:bg-[#d73f20] active:scale-[0.99] text-white font-bold py-2.5 rounded-xl shadow-xs transition cursor-pointer flex items-center justify-center gap-2"
@@ -953,6 +1064,94 @@ export default function AccountTab({ onLogout }: AccountTabProps) {
                     placeholder="Mã số thuế doanh nghiệp / hộ kinh doanh"
                     className="w-full px-3 py-2 rounded-xl border border-stone-200 font-medium text-stone-800 focus:outline-none focus:border-[#ee4d2d] transition"
                   />
+                </div>
+
+                {/* 🏦 THÔNG TIN TÀI KHOẢN NHẬN THANH TOÁN T+1 */}
+                <div className="space-y-3 rounded-xl border border-emerald-200 bg-emerald-50/60 p-3.5">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-base">🏦</span>
+                      <div>
+                        <p className="font-bold text-emerald-900 text-[11px]">
+                          Tài khoản nhận thanh toán từ Sàn
+                        </p>
+                        <p className="text-[10px] text-emerald-700/80 mt-0.5">
+                          Dùng để nhận tiền đối soát T+1. Vui lòng nhập đúng thông tin tài khoản ngân hàng của cửa hàng/chủ cửa hàng.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-emerald-900 block mb-1 font-semibold text-[11px]">
+                      Ngân hàng
+                    </label>
+                    <input
+                      type="text"
+                      value={tempInfo.bankAccount.bankName}
+                      onChange={(e) =>
+                        setTempInfo({
+                          ...tempInfo,
+                          bankAccount: {
+                            ...tempInfo.bankAccount,
+                            bankName: e.target.value,
+                          },
+                        })
+                      }
+                      placeholder="Ví dụ: Vietcombank, BIDV, MB Bank..."
+                      className="w-full px-3 py-2 rounded-xl border border-emerald-200 font-medium text-stone-800 bg-white focus:outline-none focus:border-emerald-500 transition"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-emerald-900 block mb-1 font-semibold text-[11px]">
+                        Số tài khoản
+                      </label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        autoComplete="off"
+                        value={tempInfo.bankAccount.accountNumber}
+                        onChange={(e) =>
+                          setTempInfo({
+                            ...tempInfo,
+                            bankAccount: {
+                              ...tempInfo.bankAccount,
+                              accountNumber: e.target.value.replace(/\s+/g, ""),
+                            },
+                          })
+                        }
+                        placeholder="Nhập số tài khoản"
+                        className="w-full px-3 py-2 rounded-xl border border-emerald-200 font-mono font-bold text-stone-800 bg-white focus:outline-none focus:border-emerald-500 transition"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-emerald-900 block mb-1 font-semibold text-[11px]">
+                        Chủ tài khoản
+                      </label>
+                      <input
+                        type="text"
+                        value={tempInfo.bankAccount.accountHolder}
+                        onChange={(e) =>
+                          setTempInfo({
+                            ...tempInfo,
+                            bankAccount: {
+                              ...tempInfo.bankAccount,
+                              accountHolder: e.target.value,
+                            },
+                          })
+                        }
+                        placeholder="NGUYEN VAN A"
+                        className="w-full px-3 py-2 rounded-xl border border-emerald-200 font-semibold text-stone-800 bg-white focus:outline-none focus:border-emerald-500 transition uppercase"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg bg-white/80 border border-emerald-100 px-3 py-2 text-[10px] text-stone-500 leading-relaxed">
+                    🔐 Số tài khoản chỉ dùng cho mục đích đối soát và thanh toán từ Sàn. Nếu nhập một trường, hệ thống sẽ yêu cầu nhập đủ cả 3 trường.
+                  </div>
                 </div>
 
                 {/* 🗺️ KHU VỰC ĐỊA CHỈ & NÚT MỞ MAP COMPONENT */}

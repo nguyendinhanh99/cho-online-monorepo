@@ -1,6 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
+
 import { db } from "@/lib/firebase";
 
 import {
@@ -25,25 +32,158 @@ type VoucherApplyType = "ORDER" | "SHIPPING";
 
 type VoucherDiscountType = "FIXED" | "PERCENTAGE";
 
+type CommissionTier = "ALL" | "STANDARD" | "PREMIUM";
+
+type FundingType = "PLATFORM" | "MERCHANT" | "SHARED";
+
+type CampaignType =
+  | "WELCOME"
+  | "FREESHIP"
+  | "ORDER_DISCOUNT"
+  | "WEEKEND"
+  | "FLASH_SALE"
+  | "PREMIUM";
+
+// ============================================================
+// COMMISSION TIER
+// ============================================================
+
+function normalizeCommissionTier(
+  commissionPercent: number,
+  explicitTier?: string | null
+): Exclude<CommissionTier, "ALL"> {
+  if (explicitTier === "PREMIUM") {
+    return "PREMIUM";
+  }
+
+  if (explicitTier === "STANDARD") {
+    return "STANDARD";
+  }
+
+  // Backward compatibility:
+  // hệ thống hiện tại dùng 15% / 20%.
+  return commissionPercent >= 20
+    ? "PREMIUM"
+    : "STANDARD";
+}
+
+function getCommissionTierLabel(
+  tier?: CommissionTier | null
+) {
+  switch (tier) {
+    case "PREMIUM":
+      return "PREMIUM · 20%";
+
+    case "STANDARD":
+      return "STANDARD · 15%";
+
+    default:
+      return "Tất cả gói";
+  }
+}
+
+function getCommissionTierDescription(
+  tier?: CommissionTier | null
+) {
+  switch (tier) {
+    case "PREMIUM":
+      return "Gói Premium: được hưởng các chiến dịch và voucher Premium.";
+
+    case "STANDARD":
+      return "Gói Standard: các voucher và campaign cơ bản.";
+
+    default:
+      return "Voucher dùng được cho cả quán Standard và Premium.";
+  }
+}
+
+// ============================================================
+// FUNDING
+// ============================================================
+
+function getFundingLabel(
+  fundingType?: FundingType,
+  platformPercent?: number | null,
+  merchantPercent?: number | null
+) {
+  switch (fundingType) {
+    case "MERCHANT":
+      return "Quán tài trợ";
+
+    case "SHARED":
+      return `Chia sẻ ${Number(
+        platformPercent ?? 50
+      )}% / ${Number(
+        merchantPercent ?? 50
+      )}%`;
+
+    default:
+      return "Sàn tài trợ";
+  }
+}
+
+// ============================================================
+// CAMPAIGN
+// ============================================================
+
+function getCampaignLabel(
+  campaignType?: CampaignType | null
+) {
+  switch (campaignType) {
+    case "WELCOME":
+      return "Khách hàng mới";
+
+    case "FREESHIP":
+      return "Freeship";
+
+    case "ORDER_DISCOUNT":
+      return "Giảm đơn hàng";
+
+    case "WEEKEND":
+      return "Cuối tuần";
+
+    case "FLASH_SALE":
+      return "Flash Sale";
+
+    case "PREMIUM":
+      return "Premium";
+
+    default:
+      return "Khác";
+  }
+}
+
+// ============================================================
+// VOUCHER
+// ============================================================
+
 interface Voucher {
   id: string;
+
   code: string;
+
   title: string;
+
   description?: string;
 
   applyType: VoucherApplyType;
+
   discountType: VoucherDiscountType;
+
   discountValue: number;
 
   maxDiscount?: number | null;
+
   minOrder?: number | null;
 
   usageLimit?: number | null;
+
   usedCount?: number;
 
   limitPerUser?: number;
 
   startDate?: string | null;
+
   endDate?: string | null;
 
   isActive?: boolean;
@@ -55,16 +195,54 @@ interface Voucher {
   targetType?: VoucherTargetType;
 
   merchantId?: string | null;
+
   merchantName?: string | null;
+
   merchantCode?: string | null;
+
   merchantCommissionPercent?: number | null;
+
+  // ==========================================================
+  // COMMISSION TIER
+  // ==========================================================
+
+  eligibleCommissionTier?: CommissionTier;
+
+  // ==========================================================
+  // FUNDING
+  // ==========================================================
+
+  fundingType?: FundingType;
+
+  platformFundingPercent?: number | null;
+
+  merchantFundingPercent?: number | null;
+
+  // ==========================================================
+  // CAMPAIGN
+  // ==========================================================
+
+  campaignType?: CampaignType | null;
 }
+
+// ============================================================
+// MERCHANT
+// ============================================================
 
 interface MerchantOption {
   id: string;
+
   shopName: string;
+
   merchantCode?: string;
+
   commissionPercent: number;
+
+  commissionTier: Exclude<
+    CommissionTier,
+    "ALL"
+  >;
+
   status?: string;
 }
 
@@ -74,6 +252,7 @@ interface MerchantOption {
 
 interface VoucherManagerModalProps {
   isOpen: boolean;
+
   onClose: () => void;
 }
 
@@ -123,8 +302,12 @@ export default function VoucherManagerModal({
   // FORM
   // ==========================================================
 
-  const [code, setCode] = useState("");
-  const [title, setTitle] = useState("");
+  const [code, setCode] =
+    useState("");
+
+  const [title, setTitle] =
+    useState("");
+
   const [description, setDescription] =
     useState("");
 
@@ -139,6 +322,11 @@ export default function VoucherManagerModal({
 
   const [maxDiscount, setMaxDiscount] =
     useState("");
+
+  // ==========================================================
+  // IMPORTANT:
+  // ĐIỀU KIỆN ĐƠN TỐI THIỂU
+  // ==========================================================
 
   const [minOrder, setMinOrder] =
     useState("");
@@ -159,24 +347,65 @@ export default function VoucherManagerModal({
     useState(true);
 
   // ==========================================================
+  // COMMISSION TIER
+  // ==========================================================
+
+  const [
+    eligibleCommissionTier,
+    setEligibleCommissionTier,
+  ] = useState<CommissionTier>("ALL");
+
+  // ==========================================================
+  // FUNDING
+  // ==========================================================
+
+  const [fundingType, setFundingType] =
+    useState<FundingType>("PLATFORM");
+
+  const [
+    platformFundingPercent,
+    setPlatformFundingPercent,
+  ] = useState("100");
+
+  const [
+    merchantFundingPercent,
+    setMerchantFundingPercent,
+  ] = useState("0");
+
+  // ==========================================================
+  // CAMPAIGN
+  // ==========================================================
+
+  const [campaignType, setCampaignType] =
+    useState<CampaignType>(
+      "ORDER_DISCOUNT"
+    );
+
+  // ==========================================================
   // TARGET
   // ==========================================================
 
   const [targetType, setTargetType] =
     useState<VoucherTargetType>("ALL");
 
-  const [selectedMerchantId, setSelectedMerchantId] =
-    useState("");
+  const [
+    selectedMerchantId,
+    setSelectedMerchantId,
+  ] = useState("");
 
   // ==========================================================
-  // FALLBACK INFO FOR OLD / MISSING MERCHANT
+  // FALLBACK MERCHANT INFO
   // ==========================================================
 
-  const [selectedMerchantName, setSelectedMerchantName] =
-    useState("");
+  const [
+    selectedMerchantName,
+    setSelectedMerchantName,
+  ] = useState("");
 
-  const [selectedMerchantCode, setSelectedMerchantCode] =
-    useState("");
+  const [
+    selectedMerchantCode,
+    setSelectedMerchantCode,
+  ] = useState("");
 
   const [
     selectedMerchantCommission,
@@ -195,13 +424,21 @@ export default function VoucherManagerModal({
   // ==========================================================
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      return;
+    }
 
     setFetchingList(true);
 
     const q = query(
-      collection(db, "vouchers"),
-      orderBy("createdAt", "desc")
+      collection(
+        db,
+        "vouchers"
+      ),
+      orderBy(
+        "createdAt",
+        "desc"
+      )
     );
 
     const unsubscribe =
@@ -217,20 +454,17 @@ export default function VoucherManagerModal({
                 return {
                   id: docSnap.id,
 
-                  code:
-                    String(
-                      data.code || ""
-                    ),
+                  code: String(
+                    data.code || ""
+                  ),
 
-                  title:
-                    String(
-                      data.title || ""
-                    ),
+                  title: String(
+                    data.title || ""
+                  ),
 
-                  description:
-                    String(
-                      data.description || ""
-                    ),
+                  description: String(
+                    data.description || ""
+                  ),
 
                   applyType:
                     data.applyType ===
@@ -261,6 +495,10 @@ export default function VoucherManagerModal({
                         )
                       : null,
 
+                  // =================================================
+                  // MIN ORDER
+                  // =================================================
+
                   minOrder:
                     data.minOrder !==
                       undefined &&
@@ -271,7 +509,7 @@ export default function VoucherManagerModal({
                       ? Number(
                           data.minOrder
                         )
-                      : null,
+                      : 0,
 
                   usageLimit:
                     data.usageLimit !==
@@ -306,9 +544,9 @@ export default function VoucherManagerModal({
                   isActive:
                     data.isActive !== false,
 
-                  // ----------------------------------------
+                  // =================================================
                   // TARGET
-                  // ----------------------------------------
+                  // =================================================
 
                   targetType:
                     data.targetType ===
@@ -339,11 +577,99 @@ export default function VoucherManagerModal({
                           data.merchantCommissionPercent
                         )
                       : null,
+
+                  // =================================================
+                  // COMMISSION TIER
+                  // =================================================
+
+                  eligibleCommissionTier:
+                    data.eligibleCommissionTier ===
+                      "PREMIUM" ||
+                    data.eligibleCommissionTier ===
+                      "STANDARD" ||
+                    data.eligibleCommissionTier ===
+                      "ALL"
+                      ? data.eligibleCommissionTier
+                      : data.merchantCommissionPercent !==
+                          undefined &&
+                        data.merchantCommissionPercent !==
+                          null
+                      ? normalizeCommissionTier(
+                          Number(
+                            data.merchantCommissionPercent
+                          )
+                        )
+                      : "ALL",
+
+                  // =================================================
+                  // FUNDING
+                  // =================================================
+
+                  fundingType:
+                    data.fundingType ===
+                      "MERCHANT" ||
+                    data.fundingType ===
+                      "SHARED"
+                      ? data.fundingType
+                      : "PLATFORM",
+
+                  platformFundingPercent:
+                    data.platformFundingPercent !==
+                      undefined &&
+                    data.platformFundingPercent !==
+                      null
+                      ? Number(
+                          data.platformFundingPercent
+                        )
+                      : data.fundingType ===
+                        "MERCHANT"
+                      ? 0
+                      : data.fundingType ===
+                        "SHARED"
+                      ? 50
+                      : 100,
+
+                  merchantFundingPercent:
+                    data.merchantFundingPercent !==
+                      undefined &&
+                    data.merchantFundingPercent !==
+                      null
+                      ? Number(
+                          data.merchantFundingPercent
+                        )
+                      : data.fundingType ===
+                        "MERCHANT"
+                      ? 100
+                      : data.fundingType ===
+                        "SHARED"
+                      ? 50
+                      : 0,
+
+                  // =================================================
+                  // CAMPAIGN
+                  // =================================================
+
+                  campaignType:
+                    data.campaignType ===
+                      "WELCOME" ||
+                    data.campaignType ===
+                      "FREESHIP" ||
+                    data.campaignType ===
+                      "ORDER_DISCOUNT" ||
+                    data.campaignType ===
+                      "WEEKEND" ||
+                    data.campaignType ===
+                      "FLASH_SALE" ||
+                    data.campaignType ===
+                      "PREMIUM"
+                      ? data.campaignType
+                      : null,
                 };
               }
             );
 
           setVouchers(list);
+
           setFetchingList(false);
         },
         (error) => {
@@ -356,98 +682,135 @@ export default function VoucherManagerModal({
         }
       );
 
-    return () => unsubscribe();
+    return () =>
+      unsubscribe();
   }, [isOpen]);
 
   // ==========================================================
   // FETCH MERCHANTS
   // ==========================================================
 
-useEffect(() => {
-  if (!isOpen) return;
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
 
-  setFetchingMerchants(true);
+    setFetchingMerchants(true);
 
-  const merchantCollection =
-    collection(db, "merchants");
+    const merchantCollection =
+      collection(
+        db,
+        "merchants"
+      );
 
-  const unsubscribe =
-    onSnapshot(
-      merchantCollection,
-      (snapshot) => {
-        const list: MerchantOption[] = [];
+    const unsubscribe =
+      onSnapshot(
+        merchantCollection,
+        (snapshot) => {
+          const list: MerchantOption[] =
+            [];
 
-        snapshot.docs.forEach((docSnap) => {
-          const data = docSnap.data();
+          snapshot.docs.forEach(
+            (docSnap) => {
+              const data =
+                docSnap.data();
 
-          const status = String(
-            data.status || ""
-          ).toUpperCase();
+              const status =
+                String(
+                  data.status || ""
+                ).toUpperCase();
 
-          // Chỉ lấy quán đã duyệt / đang hoạt động
-          if (
-            status &&
-            status !== "APPROVED" &&
-            status !== "ACTIVE"
-          ) {
-            return;
-          }
+              // Chỉ lấy quán đã duyệt / đang hoạt động
+              if (
+                status &&
+                status !== "APPROVED" &&
+                status !== "ACTIVE"
+              ) {
+                return;
+              }
 
-          const parsedCommission = Number(
-            data.commissionPercent ?? 10
+              const parsedCommission =
+                Number(
+                  data.commissionPercent ??
+                    10
+                );
+
+              const commissionPercent =
+                Number.isFinite(
+                  parsedCommission
+                ) &&
+                parsedCommission >=
+                  0 &&
+                parsedCommission <=
+                  100
+                  ? parsedCommission
+                  : 10;
+
+              const commissionTier =
+                normalizeCommissionTier(
+                  commissionPercent,
+                  data.commissionTier
+                );
+
+              const merchant: MerchantOption =
+                {
+                  id: docSnap.id,
+
+                  shopName: String(
+                    data.shopName ||
+                      data.storeName ||
+                      data.name ||
+                      "Gian hàng"
+                  ),
+
+                  merchantCode:
+                    data.merchantCode
+                      ? String(
+                          data.merchantCode
+                        )
+                      : undefined,
+
+                  commissionPercent,
+
+                  commissionTier,
+
+                  status:
+                    status ||
+                    "APPROVED",
+                };
+
+              list.push(
+                merchant
+              );
+            }
           );
 
-          const commissionPercent =
-            Number.isFinite(parsedCommission) &&
-            parsedCommission >= 0 &&
-            parsedCommission <= 100
-              ? parsedCommission
-              : 10;
+          list.sort(
+            (a, b) =>
+              a.shopName.localeCompare(
+                b.shopName,
+                "vi"
+              )
+          );
 
-          const merchant: MerchantOption = {
-            id: docSnap.id,
+          setMerchants(list);
 
-            shopName: String(
-              data.shopName ||
-                data.storeName ||
-                data.name ||
-                "Gian hàng"
-            ),
+          setFetchingMerchants(false);
+        },
+        (error) => {
+          console.error(
+            "❌ Lỗi tải danh sách Merchant:",
+            error
+          );
 
-            merchantCode: data.merchantCode
-              ? String(data.merchantCode)
-              : undefined,
+          setFetchingMerchants(false);
+        }
+      );
 
-            commissionPercent,
+    return () =>
+      unsubscribe();
+  }, [isOpen]);
 
-            status: status || "APPROVED",
-          };
-
-          list.push(merchant);
-        });
-
-        list.sort((a, b) =>
-          a.shopName.localeCompare(
-            b.shopName,
-            "vi"
-          )
-        );
-
-        setMerchants(list);
-        setFetchingMerchants(false);
-      },
-      (error) => {
-        console.error(
-          "❌ Lỗi tải danh sách Merchant:",
-          error
-        );
-
-        setFetchingMerchants(false);
-      }
-    );
-
-  return () => unsubscribe();
-}, [isOpen]);
   // ==========================================================
   // FORMAT DATE
   // ==========================================================
@@ -455,15 +818,18 @@ useEffect(() => {
   const formatISOToInput = (
     isoStr?: string | null
   ) => {
-    if (!isoStr) return "";
+    if (!isoStr) {
+      return "";
+    }
 
     try {
-      const date = new Date(
-        isoStr
-      );
+      const date =
+        new Date(
+          isoStr
+        );
 
       if (
-        isNaN(
+        Number.isNaN(
           date.getTime()
         )
       ) {
@@ -491,10 +857,12 @@ useEffect(() => {
         style: "currency",
         currency: "VND",
       }
-    ).format(value || 0);
+    ).format(
+      Number(value) || 0
+    );
 
   // ==========================================================
-  // CURRENT SELECTED MERCHANT
+  // SELECTED MERCHANT
   // ==========================================================
 
   const selectedMerchant =
@@ -518,7 +886,7 @@ useEffect(() => {
     ]);
 
   // ==========================================================
-  // SELECT MERCHANT
+  // MERCHANT CHANGE
   // ==========================================================
 
   const handleMerchantChange = (
@@ -550,6 +918,11 @@ useEffect(() => {
 
     setSelectedMerchantCommission(
       merchant.commissionPercent
+    );
+
+    // Voucher riêng quán luôn theo đúng tier.
+    setEligibleCommissionTier(
+      merchant.commissionTier
     );
   };
 
@@ -602,11 +975,16 @@ useEffect(() => {
         : ""
     );
 
+    // ==========================================================
+    // LOAD MIN ORDER
+    // ==========================================================
+
     setMinOrder(
       voucher.minOrder !==
         null &&
       voucher.minOrder !==
-        undefined
+        undefined &&
+      voucher.minOrder > 0
         ? String(
             voucher.minOrder
           )
@@ -649,9 +1027,80 @@ useEffect(() => {
         false
     );
 
-    // ----------------------------------------------
+    // ==========================================================
+    // COMMISSION TIER
+    // ==========================================================
+
+    const storedTier =
+      voucher.eligibleCommissionTier &&
+      [
+        "ALL",
+        "STANDARD",
+        "PREMIUM",
+      ].includes(
+        voucher.eligibleCommissionTier
+      )
+        ? voucher.eligibleCommissionTier
+        : "ALL";
+
+    setEligibleCommissionTier(
+      storedTier as CommissionTier
+    );
+
+    // ==========================================================
+    // FUNDING
+    // ==========================================================
+
+    const storedFunding =
+      voucher.fundingType ===
+        "MERCHANT" ||
+      voucher.fundingType ===
+        "SHARED"
+        ? voucher.fundingType
+        : "PLATFORM";
+
+    setFundingType(
+      storedFunding
+    );
+
+    setPlatformFundingPercent(
+      String(
+        voucher.platformFundingPercent ??
+          (storedFunding ===
+          "MERCHANT"
+            ? 0
+            : storedFunding ===
+              "SHARED"
+            ? 50
+            : 100)
+      )
+    );
+
+    setMerchantFundingPercent(
+      String(
+        voucher.merchantFundingPercent ??
+          (storedFunding ===
+          "MERCHANT"
+            ? 100
+            : storedFunding ===
+              "SHARED"
+            ? 50
+            : 0)
+      )
+    );
+
+    // ==========================================================
+    // CAMPAIGN
+    // ==========================================================
+
+    setCampaignType(
+      voucher.campaignType ||
+        "ORDER_DISCOUNT"
+    );
+
+    // ==========================================================
     // TARGET
-    // ----------------------------------------------
+    // ==========================================================
 
     const isMerchantVoucher =
       voucher.targetType ===
@@ -686,6 +1135,21 @@ useEffect(() => {
         voucher.merchantCommissionPercent ??
           null
       );
+
+      const matchedMerchant =
+        merchants.find(
+          (merchant) =>
+            merchant.id ===
+            voucher.merchantId
+        );
+
+      setEligibleCommissionTier(
+        matchedMerchant?.commissionTier ||
+          normalizeCommissionTier(
+            voucher.merchantCommissionPercent ??
+              15
+          )
+      );
     } else {
       setTargetType(
         "ALL"
@@ -706,13 +1170,23 @@ useEffect(() => {
       setSelectedMerchantCommission(
         null
       );
+
+      if (
+        !voucher.eligibleCommissionTier
+      ) {
+        setEligibleCommissionTier(
+          "ALL"
+        );
+      }
     }
 
-    setActiveTab("form");
+    setActiveTab(
+      "form"
+    );
   };
 
   // ==========================================================
-  // OPEN CREATE
+  // CREATE
   // ==========================================================
 
   const handleOpenCreateForm = () => {
@@ -722,7 +1196,9 @@ useEffect(() => {
       null
     );
 
-    setActiveTab("form");
+    setActiveTab(
+      "form"
+    );
   };
 
   // ==========================================================
@@ -794,11 +1270,61 @@ useEffect(() => {
   };
 
   // ==========================================================
+  // FUNDING TYPE
+  // ==========================================================
+
+  const handleFundingTypeChange = (
+    nextType: FundingType
+  ) => {
+    setFundingType(
+      nextType
+    );
+
+    if (
+      nextType ===
+      "PLATFORM"
+    ) {
+      setPlatformFundingPercent(
+        "100"
+      );
+
+      setMerchantFundingPercent(
+        "0"
+      );
+
+      return;
+    }
+
+    if (
+      nextType ===
+      "MERCHANT"
+    ) {
+      setPlatformFundingPercent(
+        "0"
+      );
+
+      setMerchantFundingPercent(
+        "100"
+      );
+
+      return;
+    }
+
+    setPlatformFundingPercent(
+      "50"
+    );
+
+    setMerchantFundingPercent(
+      "50"
+    );
+  };
+
+  // ==========================================================
   // SUBMIT
   // ==========================================================
 
   const handleSubmit = async (
-    e: React.FormEvent
+    e: FormEvent
   ) => {
     e.preventDefault();
 
@@ -857,7 +1383,34 @@ useEffect(() => {
     }
 
     // --------------------------------------------------------
-    // TARGET VALIDATION
+    // MAX DISCOUNT
+    // --------------------------------------------------------
+
+    const numericMaxDiscount =
+      maxDiscount
+        ? Number(
+            maxDiscount
+          )
+        : null;
+
+    if (
+      numericMaxDiscount !==
+        null &&
+      (!Number.isFinite(
+        numericMaxDiscount
+      ) ||
+        numericMaxDiscount <=
+          0)
+    ) {
+      alert(
+        "Mức giảm tối đa không hợp lệ."
+      );
+
+      return;
+    }
+
+    // --------------------------------------------------------
+    // TARGET
     // --------------------------------------------------------
 
     if (
@@ -873,7 +1426,54 @@ useEffect(() => {
     }
 
     // --------------------------------------------------------
-    // DATE VALIDATION
+    // MIN ORDER
+    // ========================================================
+    // Ví dụ:
+    // minOrder = 70000
+    // => khách phải có đơn >= 70.000đ
+    // --------------------------------------------------------
+
+    const numericMinOrder =
+      minOrder
+        ? Number(
+            minOrder
+          )
+        : 0;
+
+    if (
+      !Number.isFinite(
+        numericMinOrder
+      ) ||
+      numericMinOrder <
+        0
+    ) {
+      alert(
+        "Giá trị đơn tối thiểu không hợp lệ."
+      );
+
+      return;
+    }
+
+    // ========================================================
+    // Không cho maxDiscount nhỏ hơn 0
+    // ========================================================
+
+    if (
+      discountType ===
+        "PERCENTAGE" &&
+      numericMaxDiscount !==
+        null &&
+      numericMaxDiscount <= 0
+    ) {
+      alert(
+        "Mức giảm tối đa phải lớn hơn 0."
+      );
+
+      return;
+    }
+
+    // --------------------------------------------------------
+    // DATE
     // --------------------------------------------------------
 
     if (
@@ -891,8 +1491,12 @@ useEffect(() => {
         ).getTime();
 
       if (
-        !Number.isNaN(start) &&
-        !Number.isNaN(end) &&
+        !Number.isNaN(
+          start
+        ) &&
+        !Number.isNaN(
+          end
+        ) &&
         end <= start
       ) {
         alert(
@@ -904,14 +1508,28 @@ useEffect(() => {
     }
 
     // --------------------------------------------------------
-    // LIMIT VALIDATION
+    // USAGE LIMIT
     // --------------------------------------------------------
 
-    if (
-      usageLimit &&
+    const numericUsageLimit =
+      usageLimit
+        ? Number(
+            usageLimit
+          )
+        : null;
+
+    const numericLimitPerUser =
       Number(
-        usageLimit
-      ) <= 0
+        limitPerUser || 1
+      );
+
+    if (
+      numericUsageLimit !==
+        null &&
+      (!Number.isFinite(
+        numericUsageLimit
+      ) ||
+        numericUsageLimit <= 0)
     ) {
       alert(
         "Tổng số lượt dùng phải lớn hơn 0."
@@ -921,15 +1539,114 @@ useEffect(() => {
     }
 
     if (
-      Number(
-        limitPerUser || 1
-      ) <= 0
+      !Number.isFinite(
+        numericLimitPerUser
+      ) ||
+      numericLimitPerUser <=
+        0
     ) {
       alert(
         "Lượt sử dụng mỗi người phải lớn hơn 0."
       );
 
       return;
+    }
+
+    // --------------------------------------------------------
+    // FUNDING
+    // --------------------------------------------------------
+
+    const numericPlatformFunding =
+      Number(
+        platformFundingPercent || 0
+      );
+
+    const numericMerchantFunding =
+      Number(
+        merchantFundingPercent || 0
+      );
+
+    if (
+      !Number.isFinite(
+        numericPlatformFunding
+      ) ||
+      !Number.isFinite(
+        numericMerchantFunding
+      ) ||
+      numericPlatformFunding <
+        0 ||
+      numericMerchantFunding <
+        0 ||
+      numericPlatformFunding >
+        100 ||
+      numericMerchantFunding >
+        100 ||
+      Math.abs(
+        numericPlatformFunding +
+          numericMerchantFunding -
+          100
+      ) > 0.001
+    ) {
+      alert(
+        "Tỷ lệ tài trợ voucher phải hợp lệ và tổng Sàn + Quán phải bằng 100%."
+      );
+
+      return;
+    }
+
+    // --------------------------------------------------------
+    // MERCHANT COMMISSION TIER
+    // --------------------------------------------------------
+
+    let finalMerchantTier:
+      | Exclude<
+          CommissionTier,
+          "ALL"
+        >
+      | null = null;
+
+    if (
+      targetType ===
+      "MERCHANT"
+    ) {
+      const merchantTier =
+        selectedMerchant?.commissionTier ||
+        (selectedMerchantCommission !==
+        null
+          ? normalizeCommissionTier(
+              selectedMerchantCommission
+            )
+          : null);
+
+      if (!merchantTier) {
+        alert(
+          "Không xác định được gói hoa hồng của quán. Vui lòng chọn lại quán."
+        );
+
+        return;
+      }
+
+      finalMerchantTier =
+        merchantTier;
+
+      if (
+        eligibleCommissionTier !==
+          "ALL" &&
+        eligibleCommissionTier !==
+          merchantTier
+      ) {
+        alert(
+          `Voucher riêng cho quán phải dùng đúng gói ${getCommissionTierLabel(
+            merchantTier
+          )}.`
+        );
+
+        return;
+      }
+
+      setEligibleCommissionTier(
+        merchantTier
+      );
     }
 
     // --------------------------------------------------------
@@ -952,6 +1669,9 @@ useEffect(() => {
       | number
       | null = null;
 
+    let finalEligibleCommissionTier: CommissionTier =
+      eligibleCommissionTier;
+
     if (
       targetType ===
       "MERCHANT"
@@ -973,6 +1693,16 @@ useEffect(() => {
         selectedMerchant?.commissionPercent ??
         selectedMerchantCommission ??
         null;
+
+      finalEligibleCommissionTier =
+        finalMerchantTier ||
+        selectedMerchant?.commissionTier ||
+        (finalMerchantCommission !==
+        null
+          ? normalizeCommissionTier(
+              finalMerchantCommission
+            )
+          : eligibleCommissionTier);
     }
 
     // --------------------------------------------------------
@@ -996,31 +1726,22 @@ useEffect(() => {
 
       maxDiscount:
         discountType ===
-          "PERCENTAGE" &&
-        maxDiscount
-          ? Number(
-              maxDiscount
-            )
+          "PERCENTAGE"
+          ? numericMaxDiscount
           : null,
+
+      // ======================================================
+      // ĐIỀU KIỆN ĐƠN TỐI THIỂU
+      // ======================================================
 
       minOrder:
-        minOrder
-          ? Number(
-              minOrder
-            )
-          : 0,
+        numericMinOrder,
 
       usageLimit:
-        usageLimit
-          ? Number(
-              usageLimit
-            )
-          : null,
+        numericUsageLimit,
 
       limitPerUser:
-        Number(
-          limitPerUser || 1
-        ),
+        numericLimitPerUser,
 
       startDate:
         startDate
@@ -1039,7 +1760,7 @@ useEffect(() => {
       isActive,
 
       // ======================================================
-      // TARGET SHOP
+      // TARGET
       // ======================================================
 
       targetType,
@@ -1055,6 +1776,31 @@ useEffect(() => {
 
       merchantCommissionPercent:
         finalMerchantCommission,
+
+      // ======================================================
+      // COMMISSION
+      // ======================================================
+
+      eligibleCommissionTier:
+        finalEligibleCommissionTier,
+
+      // ======================================================
+      // FUNDING
+      // ======================================================
+
+      fundingType,
+
+      platformFundingPercent:
+        numericPlatformFunding,
+
+      merchantFundingPercent:
+        numericMerchantFunding,
+
+      // ======================================================
+      // CAMPAIGN
+      // ======================================================
+
+      campaignType,
     };
 
     // --------------------------------------------------------
@@ -1098,7 +1844,10 @@ useEffect(() => {
         alert(
           targetType ===
             "MERCHANT"
-            ? `Đã tạo voucher riêng cho ${finalMerchantName || "quán"}.`
+            ? `Đã tạo voucher riêng cho ${
+                finalMerchantName ||
+                "quán"
+              }.`
             : "Đã tạo voucher toàn hệ thống thành công."
         );
       }
@@ -1125,7 +1874,7 @@ useEffect(() => {
   };
 
   // ==========================================================
-  // RESET FORM
+  // RESET
   // ==========================================================
 
   const resetForm = () => {
@@ -1134,7 +1883,9 @@ useEffect(() => {
     );
 
     setCode("");
+
     setTitle("");
+
     setDescription("");
 
     setApplyType(
@@ -1146,17 +1897,46 @@ useEffect(() => {
     );
 
     setDiscountValue("");
+
     setMaxDiscount("");
+
+    // ========================================================
+    // RESET ĐIỀU KIỆN
+    // ========================================================
+
     setMinOrder("");
+
     setUsageLimit("");
+
     setLimitPerUser(
       "1"
     );
 
     setStartDate("");
+
     setEndDate("");
 
     setIsActive(true);
+
+    setEligibleCommissionTier(
+      "ALL"
+    );
+
+    setFundingType(
+      "PLATFORM"
+    );
+
+    setPlatformFundingPercent(
+      "100"
+    );
+
+    setMerchantFundingPercent(
+      "0"
+    );
+
+    setCampaignType(
+      "ORDER_DISCOUNT"
+    );
 
     setTargetType(
       "ALL"
@@ -1213,7 +1993,7 @@ useEffect(() => {
   };
 
   // ==========================================================
-  // IF CLOSED
+  // CLOSED
   // ==========================================================
 
   if (!isOpen) {
@@ -1263,6 +2043,7 @@ useEffect(() => {
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
+
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-purple-500/10 text-purple-400 border border-purple-500/20">
                   🎫
                 </div>
@@ -1273,8 +2054,20 @@ useEffect(() => {
                   </h3>
 
                   <p className="mt-0.5 text-[10px] sm:text-xs text-slate-500">
-                    Tạo mã giảm giá toàn hệ thống hoặc dành riêng cho từng quán.
+                    Quản lý voucher theo gói Standard 15%, Premium 20% và ngân sách tài trợ.
                   </p>
+
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+
+                    <span className="rounded-full border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 text-[8px] font-bold text-sky-300">
+                      STANDARD · 15%
+                    </span>
+
+                    <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[8px] font-bold text-amber-300">
+                      PREMIUM · 20%
+                    </span>
+
+                  </div>
                 </div>
               </div>
             </div>
@@ -1294,6 +2087,7 @@ useEffect(() => {
           ================================================== */}
 
           <div className="mt-4 grid grid-cols-2 gap-2">
+
             <button
               type="button"
               onClick={() =>
@@ -1310,6 +2104,7 @@ useEffect(() => {
               ].join(" ")}
             >
               Danh sách
+
               <span className="ml-1 opacity-70">
                 ({vouchers.length})
               </span>
@@ -1331,6 +2126,7 @@ useEffect(() => {
             >
               + Tạo Voucher
             </button>
+
           </div>
         </div>
 
@@ -1350,15 +2146,19 @@ useEffect(() => {
 
               {fetchingList ? (
                 <div className="flex flex-col items-center justify-center py-16">
+
                   <div className="h-7 w-7 rounded-full border-2 border-purple-500 border-t-transparent animate-spin" />
 
                   <p className="mt-3 text-[10px] text-slate-500">
                     Đang tải voucher...
                   </p>
+
                 </div>
               ) : vouchers.length ===
                 0 ? (
+
                 <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-900/50 py-16 text-center">
+
                   <div className="text-3xl">
                     🎫
                   </div>
@@ -1380,11 +2180,15 @@ useEffect(() => {
                   >
                     + Tạo voucher
                   </button>
+
                 </div>
               ) : (
+
                 <div className="space-y-3">
+
                   {vouchers.map(
                     (voucher) => {
+
                       const isMerchantVoucher =
                         voucher.targetType ===
                           "MERCHANT" ||
@@ -1399,18 +2203,23 @@ useEffect(() => {
                           }
                           className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4 hover:border-slate-700 transition"
                         >
+
                           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
 
                             {/* INFO */}
+
                             <div className="min-w-0 flex-1">
 
                               <div className="flex flex-wrap items-center gap-2">
+
                                 <span className="rounded-lg border border-purple-500/20 bg-purple-500/10 px-2 py-1 font-mono text-[10px] font-bold uppercase text-purple-300">
                                   {voucher.code}
                                 </span>
 
                                 <span className="text-[13px] font-bold text-white">
-                                  {voucher.title}
+                                  {
+                                    voucher.title
+                                  }
                                 </span>
 
                                 <span
@@ -1427,6 +2236,31 @@ useEffect(() => {
                                     ? "Đang bật"
                                     : "Đã tắt"}
                                 </span>
+
+                                <span
+                                  className={[
+                                    "rounded-full px-2 py-0.5 text-[9px] font-bold border",
+                                    voucher.eligibleCommissionTier ===
+                                    "PREMIUM"
+                                      ? "border-amber-500/20 bg-amber-500/10 text-amber-300"
+                                      : voucher.eligibleCommissionTier ===
+                                        "STANDARD"
+                                      ? "border-sky-500/20 bg-sky-500/10 text-sky-300"
+                                      : "border-violet-500/20 bg-violet-500/10 text-violet-300",
+                                  ].join(
+                                    " "
+                                  )}
+                                >
+                                  {getCommissionTierLabel(
+                                    voucher.eligibleCommissionTier
+                                  )}
+                                </span>
+
+                                <span className="rounded-full border border-indigo-500/20 bg-indigo-500/10 px-2 py-0.5 text-[9px] font-bold text-indigo-300">
+                                  {getCampaignLabel(
+                                    voucher.campaignType
+                                  )}
+                                </span>
                               </div>
 
                               {voucher.description && (
@@ -1438,10 +2272,13 @@ useEffect(() => {
                               )}
 
                               {/* DETAILS */}
-                              <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
 
-                                {/* Discount */}
+                              <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-2">
+
+                                {/* DISCOUNT */}
+
                                 <div className="rounded-xl bg-slate-950/70 border border-slate-800 p-2.5">
+
                                   <div className="text-[8px] uppercase tracking-wide text-slate-600">
                                     Mức giảm
                                   </div>
@@ -1461,10 +2298,13 @@ useEffect(() => {
                                       ? "Phí vận chuyển"
                                       : "Giá trị đơn hàng"}
                                   </div>
+
                                 </div>
 
-                                {/* Target */}
+                                {/* TARGET */}
+
                                 <div className="rounded-xl bg-slate-950/70 border border-slate-800 p-2.5">
+
                                   <div className="text-[8px] uppercase tracking-wide text-slate-600">
                                     Áp dụng cho
                                   </div>
@@ -1488,10 +2328,37 @@ useEffect(() => {
                                         %
                                       </div>
                                     )}
+
                                 </div>
 
-                                {/* Usage */}
+                                {/* MIN ORDER */}
+
+                                <div className="rounded-xl bg-slate-950/70 border border-amber-500/10 p-2.5">
+
+                                  <div className="text-[8px] uppercase tracking-wide text-slate-600">
+                                    Điều kiện đơn
+                                  </div>
+
+                                  <div className="mt-1 text-[10px] font-bold text-amber-300">
+                                    {voucher.minOrder &&
+                                    voucher.minOrder >
+                                      0
+                                      ? `Đơn từ ${formatCurrency(
+                                          voucher.minOrder
+                                        )}`
+                                      : "Không yêu cầu"}
+                                  </div>
+
+                                  <div className="mt-0.5 text-[8px] text-slate-600">
+                                    Giá trị tối thiểu
+                                  </div>
+
+                                </div>
+
+                                {/* USAGE */}
+
                                 <div className="rounded-xl bg-slate-950/70 border border-slate-800 p-2.5">
+
                                   <div className="text-[8px] uppercase tracking-wide text-slate-600">
                                     Đã sử dụng
                                   </div>
@@ -1510,30 +2377,56 @@ useEffect(() => {
                                       1}{" "}
                                     lượt/người
                                   </div>
+
                                 </div>
 
-                                {/* Min order */}
+                                {/* FUNDING */}
+
                                 <div className="rounded-xl bg-slate-950/70 border border-slate-800 p-2.5">
+
                                   <div className="text-[8px] uppercase tracking-wide text-slate-600">
-                                    Đơn tối thiểu
+                                    Tài trợ
                                   </div>
 
-                                  <div className="mt-1 text-[10px] font-bold text-amber-300">
-                                    {voucher.minOrder
-                                      ? formatCurrency(
-                                          voucher.minOrder
-                                        )
-                                      : "Không yêu cầu"}
+                                  <div className="mt-1 text-[10px] font-bold text-violet-300">
+                                    {getFundingLabel(
+                                      voucher.fundingType,
+                                      voucher.platformFundingPercent,
+                                      voucher.merchantFundingPercent
+                                    )}
                                   </div>
 
                                   <div className="mt-0.5 text-[8px] text-slate-600">
-                                    Điều kiện đơn
+                                    Chi phí voucher
                                   </div>
+
                                 </div>
+
+                                {/* CAMPAIGN */}
+
+                                <div className="rounded-xl bg-slate-950/70 border border-slate-800 p-2.5">
+
+                                  <div className="text-[8px] uppercase tracking-wide text-slate-600">
+                                    Campaign
+                                  </div>
+
+                                  <div className="mt-1 text-[10px] font-bold text-indigo-300">
+                                    {getCampaignLabel(
+                                      voucher.campaignType
+                                    )}
+                                  </div>
+
+                                  <div className="mt-0.5 text-[8px] text-slate-600">
+                                    Chương trình
+                                  </div>
+
+                                </div>
+
                               </div>
                             </div>
 
                             {/* ACTIONS */}
+
                             <div className="flex w-full lg:w-auto items-center gap-2 border-t border-slate-800 pt-3 lg:border-t-0 lg:pt-0">
 
                               <button
@@ -1581,12 +2474,14 @@ useEffect(() => {
                               >
                                 Xóa
                               </button>
+
                             </div>
                           </div>
                         </div>
                       );
                     }
                   )}
+
                 </div>
               )}
             </div>
@@ -1610,6 +2505,7 @@ useEffect(() => {
               ================================================= */}
 
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-2xl border border-purple-500/20 bg-purple-500/5 p-3.5">
+
                 <div>
                   <div className="text-[10px] font-bold text-purple-300">
                     {editingVoucherId
@@ -1633,6 +2529,7 @@ useEffect(() => {
                     + Tạo voucher mới
                   </button>
                 )}
+
               </div>
 
               {/* =================================================
@@ -1640,6 +2537,7 @@ useEffect(() => {
               ================================================= */}
 
               <section className="space-y-3">
+
                 <SectionTitle
                   number="01"
                   title="Thông tin voucher"
@@ -1647,6 +2545,7 @@ useEffect(() => {
                 />
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+
                   <FormField
                     label="Mã Voucher"
                     required
@@ -1684,12 +2583,16 @@ useEffect(() => {
                       required
                     />
                   </FormField>
+
                 </div>
 
                 <FormField label="Mô tả">
+
                   <input
                     type="text"
-                    value={description}
+                    value={
+                      description
+                    }
                     onChange={(e) =>
                       setDescription(
                         e.target.value
@@ -1698,7 +2601,9 @@ useEffect(() => {
                     placeholder="VD: Giảm 20% phí vận chuyển cho đơn hàng tại Cafe Nắng."
                     className={inputClass()}
                   />
+
                 </FormField>
+
               </section>
 
               {/* =================================================
@@ -1706,6 +2611,7 @@ useEffect(() => {
               ================================================= */}
 
               <section className="space-y-3">
+
                 <SectionTitle
                   number="02"
                   title="Đối tượng áp dụng"
@@ -1715,6 +2621,7 @@ useEffect(() => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
 
                   {/* ALL */}
+
                   <button
                     type="button"
                     onClick={() => {
@@ -1737,6 +2644,10 @@ useEffect(() => {
                       setSelectedMerchantCommission(
                         null
                       );
+
+                      setEligibleCommissionTier(
+                        "ALL"
+                      );
                     }}
                     className={[
                       "text-left rounded-2xl border p-4 transition",
@@ -1746,7 +2657,9 @@ useEffect(() => {
                         : "border-slate-800 bg-slate-900 hover:border-slate-700",
                     ].join(" ")}
                   >
+
                     <div className="flex items-start gap-3">
+
                       <div
                         className={[
                           "h-9 w-9 rounded-xl flex items-center justify-center shrink-0",
@@ -1762,7 +2675,9 @@ useEffect(() => {
                       </div>
 
                       <div className="min-w-0">
+
                         <div className="flex items-center gap-2">
+
                           <span className="text-[11px] font-bold text-white">
                             Toàn hệ thống
                           </span>
@@ -1773,23 +2688,35 @@ useEffect(() => {
                               ĐANG CHỌN
                             </span>
                           )}
+
                         </div>
 
                         <p className="mt-1 text-[9px] leading-4 text-slate-500">
                           Voucher có thể áp dụng cho các quán đủ điều kiện trên Anvami.
                         </p>
+
                       </div>
                     </div>
+
                   </button>
 
                   {/* MERCHANT */}
+
                   <button
                     type="button"
-                    onClick={() =>
+                    onClick={() => {
                       setTargetType(
                         "MERCHANT"
-                      )
-                    }
+                      );
+
+                      if (
+                        selectedMerchant
+                      ) {
+                        setEligibleCommissionTier(
+                          selectedMerchant.commissionTier
+                        );
+                      }
+                    }}
                     className={[
                       "text-left rounded-2xl border p-4 transition",
                       targetType ===
@@ -1798,7 +2725,9 @@ useEffect(() => {
                         : "border-slate-800 bg-slate-900 hover:border-slate-700",
                     ].join(" ")}
                   >
+
                     <div className="flex items-start gap-3">
+
                       <div
                         className={[
                           "h-9 w-9 rounded-xl flex items-center justify-center shrink-0",
@@ -1814,7 +2743,9 @@ useEffect(() => {
                       </div>
 
                       <div className="min-w-0">
+
                         <div className="flex items-center gap-2">
+
                           <span className="text-[11px] font-bold text-white">
                             Theo quán
                           </span>
@@ -1825,23 +2756,30 @@ useEffect(() => {
                               ĐANG CHỌN
                             </span>
                           )}
+
                         </div>
 
                         <p className="mt-1 text-[9px] leading-4 text-slate-500">
                           Voucher chỉ được áp dụng cho đơn hàng của một quán cụ thể.
                         </p>
+
                       </div>
                     </div>
+
                   </button>
+
                 </div>
 
                 {/* MERCHANT SELECTOR */}
+
                 {targetType ===
                   "MERCHANT" && (
                   <div className="rounded-2xl border border-orange-500/20 bg-orange-500/5 p-4 space-y-3">
 
                     <div className="flex items-center justify-between gap-2">
+
                       <div>
+
                         <div className="text-[10px] font-bold text-orange-200">
                           Chọn quán
                         </div>
@@ -1849,11 +2787,13 @@ useEffect(() => {
                         <div className="mt-0.5 text-[8px] text-orange-200/40">
                           Voucher sẽ được gắn trực tiếp với Merchant ID của quán.
                         </div>
+
                       </div>
 
                       {fetchingMerchants && (
                         <div className="h-4 w-4 rounded-full border-2 border-orange-400 border-t-transparent animate-spin" />
                       )}
+
                     </div>
 
                     <select
@@ -1870,11 +2810,11 @@ useEffect(() => {
                       }
                       className={inputClass()}
                     >
+
                       <option value="">
                         -- Chọn quán áp dụng --
                       </option>
 
-                      {/* Fallback option khi merchant cũ không còn trong list */}
                       {selectedMerchantId &&
                         !merchants.some(
                           (merchant) =>
@@ -1901,26 +2841,36 @@ useEffect(() => {
                               merchant.id
                             }
                           >
-                            {merchant.shopName}
+                            {
+                              merchant.shopName
+                            }
+
                             {merchant.merchantCode
                               ? ` • #${merchant.merchantCode}`
-                              : ""}{" "}
-                            • Chiết khấu{" "}
+                              : ""}
+
+                            {" "}•
                             {
                               merchant.commissionPercent
-                            }
-                            %
+                            }%
+                            {" · "}
+                            {getCommissionTierLabel(
+                              merchant.commissionTier
+                            )}
                           </option>
                         )
                       )}
+
                     </select>
 
-                    {/* Merchant summary */}
+                    {/* MERCHANT SUMMARY */}
+
                     {(selectedMerchant ||
                       selectedMerchantId) && (
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
 
                         <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+
                           <div className="text-[8px] uppercase tracking-wide text-slate-600">
                             Gian hàng
                           </div>
@@ -1930,9 +2880,11 @@ useEffect(() => {
                               selectedMerchantName ||
                               "Đã chọn quán"}
                           </div>
+
                         </div>
 
                         <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+
                           <div className="text-[8px] uppercase tracking-wide text-slate-600">
                             Mã Merchant
                           </div>
@@ -1942,9 +2894,11 @@ useEffect(() => {
                               selectedMerchantCode ||
                               selectedMerchantId}
                           </div>
+
                         </div>
 
                         <div className="rounded-xl border border-orange-500/20 bg-orange-500/5 p-3">
+
                           <div className="text-[8px] uppercase tracking-wide text-orange-300/50">
                             Chiết khấu Sàn
                           </div>
@@ -1955,7 +2909,29 @@ useEffect(() => {
                               "--"}
                             %
                           </div>
+
                         </div>
+
+                        <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-3">
+
+                          <div className="text-[8px] uppercase tracking-wide text-violet-300/50">
+                            Gói quyền lợi
+                          </div>
+
+                          <div className="mt-1 text-[11px] font-black text-violet-300">
+                            {getCommissionTierLabel(
+                              selectedMerchant?.commissionTier ||
+                                (selectedMerchantCommission !==
+                                null
+                                  ? normalizeCommissionTier(
+                                      selectedMerchantCommission
+                                    )
+                                  : null)
+                            )}
+                          </div>
+
+                        </div>
+
                       </div>
                     )}
 
@@ -1966,8 +2942,198 @@ useEffect(() => {
                           Chưa tìm thấy quán khả dụng trong hệ thống.
                         </div>
                       )}
+
                   </div>
                 )}
+
+              </section>
+
+              {/* =================================================
+                  COMMISSION TIER
+              ================================================= */}
+
+              <section className="space-y-3">
+
+                <SectionTitle
+                  number="03"
+                  title="Gói hoa hồng & quyền lợi"
+                  description="Phân biệt voucher theo gói Standard 15% và Premium 20%."
+                />
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+
+                  {/* ALL */}
+
+                  <button
+                    type="button"
+                    disabled={
+                      targetType ===
+                      "MERCHANT"
+                    }
+                    onClick={() =>
+                      setEligibleCommissionTier(
+                        "ALL"
+                      )
+                    }
+                    className={[
+                      "text-left rounded-2xl border p-4 transition",
+                      eligibleCommissionTier ===
+                      "ALL"
+                        ? "border-purple-500 bg-purple-500/10"
+                        : "border-slate-800 bg-slate-900 hover:border-slate-700",
+                      targetType ===
+                      "MERCHANT"
+                        ? "cursor-not-allowed opacity-60"
+                        : "",
+                    ].join(
+                      " "
+                    )}
+                  >
+
+                    <div className="text-[10px] font-black text-white">
+                      🌐 Tất cả gói
+                    </div>
+
+                    <div className="mt-1 text-[8px] leading-4 text-slate-500">
+                      Standard 15% và Premium 20% đều có thể sử dụng.
+                    </div>
+
+                  </button>
+
+                  {/* STANDARD */}
+
+                  <button
+                    type="button"
+                    disabled={
+                      targetType ===
+                      "MERCHANT"
+                    }
+                    onClick={() =>
+                      setEligibleCommissionTier(
+                        "STANDARD"
+                      )
+                    }
+                    className={[
+                      "text-left rounded-2xl border p-4 transition",
+                      eligibleCommissionTier ===
+                      "STANDARD"
+                        ? "border-sky-500 bg-sky-500/10"
+                        : "border-slate-800 bg-slate-900 hover:border-slate-700",
+                      targetType ===
+                      "MERCHANT"
+                        ? "cursor-not-allowed opacity-60"
+                        : "",
+                    ].join(
+                      " "
+                    )}
+                  >
+
+                    <div className="flex items-center gap-2">
+
+                      <span className="text-[10px] font-black text-white">
+                        🔹 STANDARD · 15%
+                      </span>
+
+                      {eligibleCommissionTier ===
+                        "STANDARD" && (
+                        <span className="rounded-full bg-sky-500/20 px-2 py-0.5 text-[7px] font-bold text-sky-300">
+                          ĐANG CHỌN
+                        </span>
+                      )}
+
+                    </div>
+
+                    <div className="mt-1 text-[8px] leading-4 text-slate-500">
+                      Voucher và campaign cơ bản.
+                    </div>
+
+                  </button>
+
+                  {/* PREMIUM */}
+
+                  <button
+                    type="button"
+                    disabled={
+                      targetType ===
+                      "MERCHANT"
+                    }
+                    onClick={() =>
+                      setEligibleCommissionTier(
+                        "PREMIUM"
+                      )
+                    }
+                    className={[
+                      "text-left rounded-2xl border p-4 transition",
+                      eligibleCommissionTier ===
+                      "PREMIUM"
+                        ? "border-amber-500 bg-amber-500/10"
+                        : "border-slate-800 bg-slate-900 hover:border-slate-700",
+                      targetType ===
+                      "MERCHANT"
+                        ? "cursor-not-allowed opacity-60"
+                        : "",
+                    ].join(
+                      " "
+                    )}
+                  >
+
+                    <div className="flex items-center gap-2">
+
+                      <span className="text-[10px] font-black text-white">
+                        ⭐ PREMIUM · 20%
+                      </span>
+
+                      {eligibleCommissionTier ===
+                        "PREMIUM" && (
+                        <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[7px] font-bold text-amber-300">
+                          ĐANG CHỌN
+                        </span>
+                      )}
+
+                    </div>
+
+                    <div className="mt-1 text-[8px] leading-4 text-slate-500">
+                      Voucher mạnh hơn và campaign Premium.
+                    </div>
+
+                  </button>
+
+                </div>
+
+                <div className="rounded-2xl border border-violet-500/20 bg-violet-500/5 p-3.5">
+
+                  <div className="flex items-start gap-3">
+
+                    <div className="text-lg">
+                      🎯
+                    </div>
+
+                    <div className="min-w-0">
+
+                      <div className="text-[10px] font-bold text-violet-300">
+                        {getCommissionTierLabel(
+                          eligibleCommissionTier
+                        )}
+                      </div>
+
+                      <div className="mt-1 text-[8px] leading-4 text-violet-200/50">
+                        {targetType ===
+                          "MERCHANT" &&
+                        selectedMerchant
+                          ? `Voucher riêng cho ${selectedMerchant.shopName} sẽ tự động theo ${getCommissionTierLabel(
+                              selectedMerchant.commissionTier
+                            )}.`
+                          : getCommissionTierDescription(
+                              eligibleCommissionTier
+                            )}
+                      </div>
+
+                    </div>
+
+                  </div>
+
+                </div>
+
               </section>
 
               {/* =================================================
@@ -1975,8 +3141,9 @@ useEffect(() => {
               ================================================= */}
 
               <section className="space-y-3">
+
                 <SectionTitle
-                  number="03"
+                  number="04"
                   title="Hình thức khuyến mãi"
                   description="Cấu hình voucher giảm trên đơn hàng hoặc phí vận chuyển."
                 />
@@ -2021,6 +3188,7 @@ useEffect(() => {
                       }
                       className={inputClass()}
                     >
+
                       <option value="FIXED">
                         Số tiền cố định (VNĐ)
                       </option>
@@ -2028,43 +3196,51 @@ useEffect(() => {
                       <option value="PERCENTAGE">
                         Theo phần trăm (%)
                       </option>
+
                     </select>
                   </FormField>
+
                 </div>
 
                 {/* EXAMPLE */}
+
                 {applyType ===
                   "SHIPPING" &&
                   discountType ===
                     "PERCENTAGE" && (
-                  <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3">
-                    <div className="flex items-start gap-2">
-                      <span className="text-sm">
-                        💡
-                      </span>
+                    <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3">
 
-                      <div>
-                        <div className="text-[9px] font-bold text-emerald-300">
-                          Ví dụ
-                        </div>
+                      <div className="flex items-start gap-2">
 
-                        <div className="mt-0.5 text-[9px] leading-4 text-emerald-200/60">
-                          Nhập{" "}
-                          <strong className="text-emerald-300">
-                            20
-                          </strong>{" "}
-                          ở mức giảm để tạo voucher giảm{" "}
-                          <strong className="text-emerald-300">
-                            20% phí vận chuyển
-                          </strong>
-                          .
+                        <span className="text-sm">
+                          💡
+                        </span>
+
+                        <div>
+
+                          <div className="text-[9px] font-bold text-emerald-300">
+                            Ví dụ
+                          </div>
+
+                          <div className="mt-0.5 text-[9px] leading-4 text-emerald-200/60">
+                            Nhập{" "}
+                            <strong className="text-emerald-300">
+                              20
+                            </strong>{" "}
+                            ở mức giảm để tạo voucher giảm{" "}
+                            <strong className="text-emerald-300">
+                              20% phí vận chuyển
+                            </strong>
+                            .
+                          </div>
+
                         </div>
                       </div>
                     </div>
-                  </div>
-                )}
+                  )}
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+
                   <FormField
                     label={
                       discountType ===
@@ -2074,9 +3250,16 @@ useEffect(() => {
                     }
                     required
                   >
+
                     <input
                       type="number"
                       min="0"
+                      step={
+                        discountType ===
+                        "FIXED"
+                          ? "1000"
+                          : "1"
+                      }
                       max={
                         discountType ===
                         "PERCENTAGE"
@@ -2098,24 +3281,25 @@ useEffect(() => {
                           : "VD: 20"
                       }
                       className={inputClass(
-                        discountType ===
-                          "PERCENTAGE"
-                          ? "font-bold text-emerald-300"
-                          : "font-bold text-emerald-300"
+                        "font-bold text-emerald-300"
                       )}
                       required
                     />
+
                   </FormField>
 
                   {discountType ===
                     "PERCENTAGE" && (
+
                     <FormField
                       label="Giảm tối đa (VNĐ)"
                       hint="Để trống nếu không giới hạn."
                     >
+
                       <input
                         type="number"
                         min="0"
+                        step="1000"
                         value={
                           maxDiscount
                         }
@@ -2129,9 +3313,13 @@ useEffect(() => {
                           "font-bold text-amber-300"
                         )}
                       />
+
                     </FormField>
+
                   )}
+
                 </div>
+
               </section>
 
               {/* =================================================
@@ -2139,21 +3327,28 @@ useEffect(() => {
               ================================================= */}
 
               <section className="space-y-3">
+
                 <SectionTitle
-                  number="04"
+                  number="05"
                   title="Điều kiện sử dụng"
                   description="Thiết lập giá trị đơn tối thiểu và giới hạn sử dụng."
                 />
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
 
+                  {/* =================================================
+                      MIN ORDER
+                  ================================================= */}
+
                   <FormField
-                    label="Đơn tối thiểu"
-                    hint="0 = không yêu cầu."
+                    label="Giá trị đơn tối thiểu"
+                    hint="Đơn phải đạt mức này mới dùng được."
                   >
+
                     <input
                       type="number"
                       min="0"
+                      step="1000"
                       value={
                         minOrder
                       }
@@ -2162,18 +3357,117 @@ useEffect(() => {
                           e.target.value
                         )
                       }
-                      placeholder="VD: 100000"
-                      className={inputClass()}
+                      placeholder="VD: 70000"
+                      className={inputClass(
+                        "font-bold text-amber-300"
+                      )}
                     />
+
+                    {/* QUICK CONDITIONS */}
+
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+
+                      {[50000, 70000, 100000, 150000, 200000].map(
+                        (amount) => {
+
+                          const isSelected =
+                            Number(
+                              minOrder || 0
+                            ) === amount;
+
+                          return (
+                            <button
+                              key={
+                                amount
+                              }
+                              type="button"
+                              onClick={() =>
+                                setMinOrder(
+                                  String(
+                                    amount
+                                  )
+                                )
+                              }
+                              className={[
+                                "rounded-lg border px-2 py-1 text-[8px] font-bold transition",
+                                isSelected
+                                  ? "border-amber-500/40 bg-amber-500/10 text-amber-300"
+                                  : "border-slate-700 bg-slate-800 text-slate-400 hover:border-amber-500/40 hover:bg-amber-500/10 hover:text-amber-300",
+                              ].join(
+                                " "
+                              )}
+                            >
+                              {amount /
+                                1000}
+                              K
+                            </button>
+                          );
+                        }
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setMinOrder(
+                            ""
+                          )
+                        }
+                        className={[
+                          "rounded-lg border px-2 py-1 text-[8px] font-bold transition",
+                          !minOrder ||
+                          Number(
+                            minOrder
+                          ) === 0
+                            ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                            : "border-rose-500/20 bg-rose-500/5 text-rose-300 hover:bg-rose-500/10",
+                        ].join(
+                          " "
+                        )}
+                      >
+                        Không điều kiện
+                      </button>
+
+                    </div>
+
+                    {/* CURRENT CONDITION */}
+
+                    {minOrder &&
+                      Number(
+                        minOrder
+                      ) > 0 && (
+                        <div className="mt-2 rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2">
+
+                          <div className="text-[8px] uppercase tracking-wide text-amber-300/50">
+                            Điều kiện hiện tại
+                          </div>
+
+                          <div className="mt-1 text-[10px] font-bold text-amber-300">
+                            🛒 Đơn từ{" "}
+                            {formatCurrency(
+                              Number(
+                                minOrder
+                              )
+                            )}
+                          </div>
+
+                        </div>
+                      )}
+
                   </FormField>
+
+                  {/* =================================================
+                      USAGE LIMIT
+                  ================================================= */}
 
                   <FormField
                     label="Tổng lượt sử dụng"
                     hint="Để trống = không giới hạn."
                   >
+
                     <input
                       type="number"
                       min="1"
+                      step="1"
                       value={
                         usageLimit
                       }
@@ -2185,14 +3479,26 @@ useEffect(() => {
                       placeholder="VD: 500"
                       className={inputClass()}
                     />
+
+                    <div className="mt-2 text-[8px] text-slate-600">
+                      Ví dụ: 500 lượt cho toàn bộ khách hàng.
+                    </div>
+
                   </FormField>
 
+                  {/* =================================================
+                      USER LIMIT
+                  ================================================= */}
+
                   <FormField
-                    label="Lượt / người dùng"
+                    label="Lượt sử dụng / người"
+                    hint="Giới hạn cho từng khách."
                   >
+
                     <input
                       type="number"
                       min="1"
+                      step="1"
                       value={
                         limitPerUser
                       }
@@ -2204,8 +3510,327 @@ useEffect(() => {
                       placeholder="Mặc định: 1"
                       className={inputClass()}
                     />
+
+                    <div className="mt-2 text-[8px] text-slate-600">
+                      Ví dụ: mỗi khách chỉ được dùng 1 lần.
+                    </div>
+
                   </FormField>
+
                 </div>
+
+                {/* =================================================
+                    CONDITION SUMMARY
+                ================================================= */}
+
+                <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3.5">
+
+                  <div className="text-[8px] uppercase tracking-wide text-slate-600">
+                    Điều kiện voucher
+                  </div>
+
+                  <div className="mt-2 flex flex-wrap gap-2">
+
+                    {minOrder &&
+                    Number(
+                      minOrder
+                    ) > 0 ? (
+                      <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-[8px] font-bold text-amber-300">
+                        🛒 Đơn từ{" "}
+                        {formatCurrency(
+                          Number(
+                            minOrder
+                          )
+                        )}
+                      </span>
+                    ) : (
+                      <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-[8px] font-bold text-emerald-300">
+                        ✓ Không yêu cầu giá trị đơn tối thiểu
+                      </span>
+                    )}
+
+                    <span className="rounded-full border border-indigo-500/20 bg-indigo-500/10 px-2.5 py-1 text-[8px] font-bold text-indigo-300">
+                      👤{" "}
+                      {limitPerUser ||
+                        1}{" "}
+                      lượt/người
+                    </span>
+
+                    {usageLimit && (
+                      <span className="rounded-full border border-purple-500/20 bg-purple-500/10 px-2.5 py-1 text-[8px] font-bold text-purple-300">
+                        🎫 Tối đa{" "}
+                        {
+                          usageLimit
+                        }{" "}
+                        lượt
+                      </span>
+                    )}
+
+                  </div>
+                </div>
+
+                {/* =================================================
+                    REAL EXAMPLE
+                ================================================= */}
+
+                <div className="rounded-2xl border border-sky-500/20 bg-sky-500/5 p-3.5">
+
+                  <div className="flex items-start gap-3">
+
+                    <div className="text-lg">
+                      💡
+                    </div>
+
+                    <div>
+
+                      <div className="text-[10px] font-bold text-sky-300">
+                        Ví dụ điều kiện
+                      </div>
+
+                      <div className="mt-1 text-[9px] leading-5 text-sky-200/60">
+                        Voucher giảm{" "}
+                        <strong className="text-sky-300">
+                          {discountType ===
+                          "FIXED"
+                            ? formatCurrency(
+                                Number(
+                                  discountValue ||
+                                    0
+                                )
+                              )
+                            : `${discountValue || 0}%`}
+                        </strong>{" "}
+                        cho{" "}
+                        <strong className="text-sky-300"/>
+                          {applyType ===
+                          "SHIPPING"
+                            ? "phí vận chuyển"
+                            : "đơn hàng"}
+                        .
+                        {" "}
+                        {Number(
+                          minOrder || 0
+                        ) > 0 ? (
+                          <>
+                            Khách phải có đơn từ{" "}
+                            <strong className="text-amber-300">
+                              {formatCurrency(
+                                Number(
+                                  minOrder
+                                )
+                              )}
+                            </strong>
+                            .
+                          </>
+                        ) : (
+                          <>
+                            Không yêu cầu giá trị đơn tối thiểu.
+                          </>
+                        )}
+                      </div>
+
+                    </div>
+                  </div>
+
+                </div>
+
+              </section>
+
+              {/* =================================================
+                  FUNDING / CAMPAIGN
+              ================================================= */}
+
+              <section className="space-y-3">
+
+                <SectionTitle
+                  number="06"
+                  title="Ngân sách voucher & Campaign"
+                  description="Xác định ai tài trợ voucher và voucher thuộc chương trình nào."
+                />
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+
+                  <FormField
+                    label="Ai tài trợ voucher"
+                  >
+
+                    <select
+                      value={
+                        fundingType
+                      }
+                      onChange={(e) =>
+                        handleFundingTypeChange(
+                          e.target.value as FundingType
+                        )
+                      }
+                      className={inputClass()}
+                    >
+
+                      <option value="PLATFORM">
+                        Sàn tài trợ · 100%
+                      </option>
+
+                      <option value="MERCHANT">
+                        Quán tài trợ · 100%
+                      </option>
+
+                      <option value="SHARED">
+                        Chia sẻ chi phí · Sàn + Quán
+                      </option>
+
+                    </select>
+
+                  </FormField>
+
+                  <FormField
+                    label="Loại Campaign"
+                  >
+
+                    <select
+                      value={
+                        campaignType
+                      }
+                      onChange={(e) =>
+                        setCampaignType(
+                          e.target.value as CampaignType
+                        )
+                      }
+                      className={inputClass()}
+                    >
+
+                      <option value="ORDER_DISCOUNT">
+                        Giảm đơn hàng
+                      </option>
+
+                      <option value="FREESHIP">
+                        Freeship
+                      </option>
+
+                      <option value="WELCOME">
+                        Khách hàng mới
+                      </option>
+
+                      <option value="WEEKEND">
+                        Cuối tuần
+                      </option>
+
+                      <option value="FLASH_SALE">
+                        Flash Sale
+                      </option>
+
+                      <option value="PREMIUM">
+                        Premium
+                      </option>
+
+                    </select>
+
+                  </FormField>
+
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+
+                  <FormField
+                    label="Sàn tài trợ (%)"
+                    hint="Tổng Sàn + Quán = 100%"
+                  >
+
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      value={
+                        platformFundingPercent
+                      }
+                      onChange={(e) =>
+                        setPlatformFundingPercent(
+                          e.target.value
+                        )
+                      }
+                      disabled={
+                        fundingType !==
+                        "SHARED"
+                      }
+                      className={inputClass(
+                        "font-bold text-violet-300"
+                      )}
+                    />
+
+                  </FormField>
+
+                  <FormField
+                    label="Quán tài trợ (%)"
+                    hint="Tổng Sàn + Quán = 100%"
+                  >
+
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      value={
+                        merchantFundingPercent
+                      }
+                      onChange={(e) =>
+                        setMerchantFundingPercent(
+                          e.target.value
+                        )
+                      }
+                      disabled={
+                        fundingType !==
+                        "SHARED"
+                      }
+                      className={inputClass(
+                        "font-bold text-orange-300"
+                      )}
+                    />
+
+                  </FormField>
+
+                </div>
+
+                <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3.5">
+
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+
+                    <div>
+
+                      <div className="text-[9px] uppercase tracking-wide text-slate-600">
+                        Cách phân bổ chi phí
+                      </div>
+
+                      <div className="mt-1 text-[11px] font-black text-white">
+                        {getFundingLabel(
+                          fundingType,
+                          Number(
+                            platformFundingPercent ||
+                              0
+                          ),
+                          Number(
+                            merchantFundingPercent ||
+                              0
+                          )
+                        )}
+                      </div>
+
+                    </div>
+
+                    <div className="text-right">
+
+                      <div className="text-[8px] text-slate-600">
+                        Campaign
+                      </div>
+
+                      <div className="mt-1 text-[10px] font-bold text-indigo-300">
+                        {getCampaignLabel(
+                          campaignType
+                        )}
+                      </div>
+
+                    </div>
+
+                  </div>
+                </div>
+
               </section>
 
               {/* =================================================
@@ -2213,13 +3838,15 @@ useEffect(() => {
               ================================================= */}
 
               <section className="space-y-3">
+
                 <SectionTitle
-                  number="05"
+                  number="07"
                   title="Thời gian hiệu lực"
                   description="Thiết lập thời gian bắt đầu và kết thúc của voucher."
                 />
 
                 <div className="flex flex-wrap gap-2">
+
                   <button
                     type="button"
                     onClick={() =>
@@ -2250,6 +3877,7 @@ useEffect(() => {
                       setStartDate(
                         ""
                       );
+
                       setEndDate(
                         ""
                       );
@@ -2258,10 +3886,13 @@ useEffect(() => {
                   >
                     Xóa thời gian
                   </button>
+
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+
                   <FormField label="Bắt đầu">
+
                     <input
                       type="datetime-local"
                       value={
@@ -2276,9 +3907,11 @@ useEffect(() => {
                         "[color-scheme:dark]"
                       )}
                     />
+
                   </FormField>
 
                   <FormField label="Hết hạn">
+
                     <input
                       type="datetime-local"
                       value={
@@ -2293,8 +3926,11 @@ useEffect(() => {
                         "[color-scheme:dark]"
                       )}
                     />
+
                   </FormField>
+
                 </div>
+
               </section>
 
               {/* =================================================
@@ -2302,17 +3938,21 @@ useEffect(() => {
               ================================================= */}
 
               <section className="space-y-3">
+
                 <SectionTitle
-                  number="06"
+                  number="08"
                   title="Xác nhận trước khi phát hành"
-                  description="Kiểm tra nhanh phạm vi và ưu đãi của voucher."
+                  description="Kiểm tra nhanh phạm vi, mức giảm và điều kiện của voucher."
                 />
 
                 <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+
                   <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
 
                     <div className="min-w-0">
+
                       <div className="flex flex-wrap items-center gap-2">
+
                         <span className="rounded-lg bg-purple-500/10 border border-purple-500/20 px-2 py-1 font-mono text-[10px] font-bold text-purple-300">
                           {code
                             ? code.toUpperCase()
@@ -2323,9 +3963,11 @@ useEffect(() => {
                           {title ||
                             "Tên chương trình"}
                         </span>
+
                       </div>
 
                       <div className="mt-2 text-[9px] text-slate-500">
+
                         {targetType ===
                         "MERCHANT"
                           ? `Áp dụng riêng cho ${
@@ -2334,33 +3976,132 @@ useEffect(() => {
                               "quán đã chọn"
                             }`
                           : "Áp dụng toàn hệ thống"}
+
                       </div>
+
+                      {/* =================================================
+                          CONDITION BADGES
+                      ================================================= */}
+
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+
+                        {minOrder &&
+                        Number(
+                          minOrder
+                        ) > 0 ? (
+                          <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[8px] font-bold text-amber-300">
+                            🛒 Đơn từ{" "}
+                            {formatCurrency(
+                              Number(
+                                minOrder
+                              )
+                            )}
+                          </span>
+                        ) : (
+                          <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-[8px] font-bold text-emerald-300">
+                            ✓ Không điều kiện tối thiểu
+                          </span>
+                        )}
+
+                        <span className="rounded-full border border-indigo-500/20 bg-indigo-500/10 px-2 py-0.5 text-[8px] font-bold text-indigo-300">
+                          👤{" "}
+                          {limitPerUser ||
+                            1}{" "}
+                          lượt/người
+                        </span>
+
+                        {usageLimit && (
+                          <span className="rounded-full border border-purple-500/20 bg-purple-500/10 px-2 py-0.5 text-[8px] font-bold text-purple-300">
+                            🎫 Tối đa{" "}
+                            {
+                              usageLimit
+                            }{" "}
+                            lượt
+                          </span>
+                        )}
+
+                      </div>
+
+                      {/* =================================================
+                          TIER / CAMPAIGN / FUNDING
+                      ================================================= */}
+
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+
+                        <span className="rounded-full border border-violet-500/20 bg-violet-500/10 px-2 py-0.5 text-[8px] font-bold text-violet-300">
+                          {targetType ===
+                            "MERCHANT" &&
+                          selectedMerchant
+                            ? getCommissionTierLabel(
+                                selectedMerchant.commissionTier
+                              )
+                            : getCommissionTierLabel(
+                                eligibleCommissionTier
+                              )}
+                        </span>
+
+                        <span className="rounded-full border border-indigo-500/20 bg-indigo-500/10 px-2 py-0.5 text-[8px] font-bold text-indigo-300">
+                          {getCampaignLabel(
+                            campaignType
+                          )}
+                        </span>
+
+                        <span className="rounded-full border border-slate-700 bg-slate-800 px-2 py-0.5 text-[8px] font-bold text-slate-300">
+                          {getFundingLabel(
+                            fundingType,
+                            Number(
+                              platformFundingPercent ||
+                                0
+                            ),
+                            Number(
+                              merchantFundingPercent ||
+                                0
+                            )
+                          )}
+                        </span>
+
+                      </div>
+
                     </div>
 
                     <div className="flex items-center gap-3 shrink-0">
+
                       <div className="text-right">
+
                         <div className="text-[20px] font-black text-emerald-400">
+
                           {discountValue ||
                             "0"}
+
                           {discountType ===
                           "PERCENTAGE"
                             ? "%"
                             : "đ"}
+
                         </div>
 
                         <div className="text-[8px] text-slate-600 mt-0.5">
+
                           {applyType ===
                           "SHIPPING"
                             ? "phí vận chuyển"
                             : "đơn hàng"}
+
                         </div>
+
                       </div>
+
                     </div>
+
                   </div>
                 </div>
 
-                {/* ACTIVE */}
+                {/* =================================================
+                    ACTIVE
+                ================================================= */}
+
                 <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-slate-800 bg-slate-900 p-3.5">
+
                   <input
                     type="checkbox"
                     checked={
@@ -2376,6 +4117,7 @@ useEffect(() => {
                   />
 
                   <div>
+
                     <div className="text-[10px] font-bold text-white">
                       Kích hoạt voucher ngay
                     </div>
@@ -2383,8 +4125,11 @@ useEffect(() => {
                     <div className="mt-0.5 text-[8px] leading-4 text-slate-500">
                       Người dùng có thể nhìn thấy và áp dụng mã ngay khi voucher còn hiệu lực.
                     </div>
+
                   </div>
+
                 </label>
+
               </section>
 
               {/* =================================================
@@ -2392,6 +4137,7 @@ useEffect(() => {
               ================================================= */}
 
               <div className="sticky bottom-0 -mx-4 sm:-mx-6 -mb-4 sm:-mb-6 border-t border-slate-800 bg-slate-950/95 backdrop-blur px-4 sm:px-6 py-3">
+
                 <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-2">
 
                   <button
@@ -2419,10 +4165,13 @@ useEffect(() => {
                       ? "Lưu cập nhật"
                       : "Phát hành Voucher"}
                   </button>
+
                 </div>
               </div>
+
             </form>
           )}
+
         </div>
       </div>
     </div>
@@ -2444,11 +4193,13 @@ function SectionTitle({
 }) {
   return (
     <div className="flex items-start gap-3">
+
       <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-800 text-[8px] font-black text-slate-400">
         {number}
       </div>
 
       <div>
+
         <h4 className="text-[11px] font-extrabold text-white">
           {title}
         </h4>
@@ -2456,6 +4207,7 @@ function SectionTitle({
         <p className="mt-0.5 text-[8px] leading-4 text-slate-600">
           {description}
         </p>
+
       </div>
     </div>
   );
@@ -2474,11 +4226,13 @@ function FormField({
   label: string;
   required?: boolean;
   hint?: string;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <div>
+
       <div className="mb-1.5 flex items-center justify-between gap-2">
+
         <label className="text-[9px] font-bold text-slate-300">
           {label}
 
@@ -2494,9 +4248,11 @@ function FormField({
             {hint}
           </span>
         )}
+
       </div>
 
       {children}
+
     </div>
   );
 }

@@ -1,7 +1,14 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import {
+  useState,
+  useEffect,
+  useMemo,
+  type FormEvent,
+} from "react";
+
 import { db, auth } from "@cho-online/firebase";
+
 import {
   onAuthStateChanged,
   User as FirebaseUser,
@@ -19,8 +26,6 @@ import {
   serverTimestamp,
 } from "firebase/firestore";
 
-import VoucherManager from "@/components/merchant/VoucherManager";
-
 // ============================================================
 // TYPES
 // ============================================================
@@ -30,7 +35,11 @@ interface OverviewTabProps {
   onNavigateToTab?: (tabName: string) => void;
 }
 
-type TimeRange = "today" | "month" | "year" | "all";
+type TimeRange =
+  | "today"
+  | "month"
+  | "year"
+  | "all";
 
 interface OrderData {
   id: string;
@@ -46,7 +55,10 @@ interface OrderData {
 interface PayoutRequest {
   id: string;
   amount: number;
-  status: "pending" | "approved" | "rejected";
+  status:
+    | "pending"
+    | "approved"
+    | "rejected";
   bankName: string;
   accountNumber: string;
   accountName: string;
@@ -54,49 +66,51 @@ interface PayoutRequest {
   note?: string;
 }
 
+interface CommissionPlan {
+  percent: number;
+  name: string;
+  shortName: string;
+  icon: string;
+  description: string;
+  benefits: string[];
+}
+
 // ============================================================
 // PLATFORM COMMISSION PLANS
 // ============================================================
 
-const PLATFORM_COMMISSION_PLANS = [
-  {
-    percent: 10,
-    name: "Cơ Bản",
-    shortName: "Cơ bản",
-    icon: "🌱",
-    description: "Khởi đầu cùng Anvami",
-    benefits: [
-      "Gian hàng trên Anvami",
-      "Quản lý đơn & sản phẩm",
-      "Báo cáo doanh thu",
-      "Hỗ trợ tiêu chuẩn",
-    ],
-  },
+const PLATFORM_COMMISSION_PLANS: CommissionPlan[] = [
   {
     percent: 15,
     name: "Tăng Trưởng",
-    shortName: "Tăng trưởng",
+    shortName: "15% • Tăng trưởng",
     icon: "🚀",
-    description: "Mở rộng khả năng tiếp cận",
+    description:
+      "Gói tiêu chuẩn dành cho gian hàng đang phát triển.",
     benefits: [
-      "Tất cả quyền lợi cơ bản",
-      "Ưu tiên hiển thị",
-      "Tham gia chương trình quảng bá",
-      "Hỗ trợ ưu tiên",
+      "Gian hàng trên Anvami",
+      "Quản lý đơn hàng và sản phẩm",
+      "Theo dõi doanh thu và hiệu quả kinh doanh",
+      "Ưu tiên hiển thị trên nền tảng",
+      "Tham gia các chương trình do Sàn triển khai",
+      "Có thể tham gia voucher được Sàn hỗ trợ",
+      "Hỗ trợ tiêu chuẩn từ Anvami",
     ],
   },
   {
     percent: 20,
     name: "Nổi Bật",
-    shortName: "Nổi bật",
+    shortName: "20% • Nổi bật",
     icon: "⭐",
-    description: "Tăng cường hiện diện",
+    description:
+      "Gói dành cho gian hàng muốn tăng khả năng tiếp cận khách hàng.",
     benefits: [
-      "Tất cả quyền lợi tăng trưởng",
+      "Tất cả quyền lợi của gói Tăng Trưởng",
       "Ưu tiên vị trí hiển thị cao hơn",
-      "Ưu tiên chiến dịch của Sàn",
-      "Hỗ trợ ưu tiên cao",
-      "Cơ hội hỗ trợ truyền thông/Livestream",
+      "Ưu tiên tham gia các chiến dịch của Sàn",
+      "Ưu tiên các chương trình voucher do Sàn triển khai",
+      "Có cơ hội được hỗ trợ truyền thông và Livestream",
+      "Hỗ trợ ưu tiên cao từ Anvami",
     ],
   },
 ];
@@ -105,147 +119,181 @@ const PLATFORM_COMMISSION_PLANS = [
 // FORMAT DATE
 // ============================================================
 
-const getOrderDate = (createdAt: any): Date | null => {
+const getOrderDate = (
+  createdAt: any
+): Date | null => {
   try {
-    if (!createdAt) return null;
-
-    if (typeof createdAt?.toDate === "function") {
-      const date = createdAt.toDate();
-      return isNaN(date.getTime()) ? null : date;
+    if (!createdAt) {
+      return null;
     }
 
-    const date = new Date(createdAt);
+    if (
+      typeof createdAt?.toDate ===
+      "function"
+    ) {
+      const date =
+        createdAt.toDate();
 
-    return isNaN(date.getTime()) ? null : date;
+      return isNaN(
+        date.getTime()
+      )
+        ? null
+        : date;
+    }
+
+    const date =
+      new Date(createdAt);
+
+    return isNaN(
+      date.getTime()
+    )
+      ? null
+      : date;
   } catch {
     return null;
   }
 };
 
 // ============================================================
-// PLAN CARD
+// COMMISSION PLAN CARD
 // ============================================================
 
 function CommissionPlanCard({
   plan,
   active,
+  onClick,
 }: {
-  plan: (typeof PLATFORM_COMMISSION_PLANS)[number];
+  plan: CommissionPlan;
   active: boolean;
+  onClick: () => void;
 }) {
   return (
-    <div
+    <button
+      type="button"
+      onClick={onClick}
       className={`
-        relative rounded-2xl border transition-all duration-200
+        w-full text-left relative rounded-2xl border overflow-hidden
+        transition-all duration-200 active:scale-[.99]
         ${
           active
-            ? "border-[#ee4d2d] bg-[#fff8f5] shadow-sm"
-            : "border-stone-200 bg-white hover:border-stone-300"
+            ? "border-[#ee4d2d] bg-gradient-to-r from-[#fff8f5] to-white shadow-sm ring-1 ring-[#ee4d2d]/10"
+            : "border-stone-200 bg-white hover:border-stone-300 hover:shadow-sm"
         }
       `}
     >
-      {/* Active indicator */}
+      {/* ACTIVE LINE */}
+
       {active && (
-        <div className="absolute top-0 left-0 right-0 h-1 rounded-t-2xl bg-[#ee4d2d]" />
+        <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#ee4d2d]" />
       )}
 
-      <div className="p-3.5">
-        {/* Header */}
-        <div className="flex items-start justify-between gap-2">
-          <div className="flex items-center gap-2.5">
+      <div className="px-3.5 py-3">
+
+        <div className="flex items-center justify-between gap-3">
+
+          {/* LEFT */}
+
+          <div className="flex items-center gap-3 min-w-0">
+
+            {/* ICON */}
+
             <div
-              className={`
-                w-9 h-9 rounded-xl flex items-center justify-center text-base shrink-0
-                ${
-                  active
-                    ? "bg-orange-100"
-                    : "bg-stone-100"
-                }
-              `}
+              className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg shrink-0 ${
+                active
+                  ? "bg-orange-100"
+                  : "bg-stone-100"
+              }`}
             >
               {plan.icon}
             </div>
 
-            <div>
-              <div
-                className={`text-[11px] font-extrabold ${
-                  active
-                    ? "text-[#ee4d2d]"
-                    : "text-stone-800"
-                }`}
-              >
-                {plan.name}
+            {/* INFO */}
+
+            <div className="min-w-0">
+
+              <div className="flex items-center gap-2 flex-wrap">
+
+                <div
+                  className={`text-[11px] font-black ${
+                    active
+                      ? "text-[#ee4d2d]"
+                      : "text-stone-800"
+                  }`}
+                >
+                  {plan.name}
+                </div>
+
+                <span
+                  className={`text-[10px] font-black ${
+                    active
+                      ? "text-[#ee4d2d]"
+                      : "text-stone-600"
+                  }`}
+                >
+                  {plan.percent}%
+                </span>
+
               </div>
 
-              <div className="text-[9px] text-stone-400 mt-0.5">
-                {plan.description}
+              <div className="text-[8px] text-stone-400 mt-0.5">
+                Chiết khấu Sàn • Bấm để xem chính sách
               </div>
+
             </div>
           </div>
 
-          {active && (
-            <span className="shrink-0 bg-[#ee4d2d] text-white text-[8px] font-black px-2 py-1 rounded-full">
-              ĐANG DÙNG
-            </span>
-          )}
+          {/* RIGHT */}
+
+          <div className="shrink-0 flex items-center gap-2">
+
+            {active ? (
+              <span className="bg-[#ee4d2d] text-white text-[7px] font-black px-2 py-1 rounded-full">
+                ĐANG DÙNG
+              </span>
+            ) : (
+              <span className="text-stone-300 text-xl leading-none">
+                ›
+              </span>
+            )}
+
+          </div>
         </div>
 
-        {/* Commission */}
-        <div className="mt-3 flex items-end justify-between">
-          <div>
-            <div
-              className={`text-2xl font-black leading-none ${
+        {/* BOTTOM */}
+
+        <div className="mt-2.5 pt-2.5 border-t border-stone-100 flex items-center justify-between gap-3">
+
+          <div className="flex items-baseline gap-1.5">
+
+            <span
+              className={`text-xl font-black leading-none ${
                 active
                   ? "text-[#ee4d2d]"
                   : "text-stone-800"
               }`}
             >
               {plan.percent}%
-            </div>
+            </span>
 
-            <div className="text-[8px] uppercase tracking-wide text-stone-400 font-bold mt-1">
-              Chiết khấu Sàn
-            </div>
+            <span className="text-[8px] text-stone-400">
+              chiết khấu Sàn
+            </span>
+
           </div>
 
-          <div
-            className={`text-[9px] font-semibold px-2 py-1 rounded-lg ${
+          <span
+            className={`text-[8px] font-bold px-2.5 py-1 rounded-lg ${
               active
-                ? "bg-orange-100 text-orange-700"
+                ? "bg-orange-50 text-orange-700"
                 : "bg-stone-100 text-stone-500"
             }`}
           >
-            {plan.shortName}
-          </div>
-        </div>
+            Xem chính sách →
+          </span>
 
-        {/* Benefits */}
-        <div className="mt-3 pt-3 border-t border-stone-100 space-y-1.5">
-          {plan.benefits.map(
-            (benefit, index) => (
-              <div
-                key={`${plan.percent}-${index}`}
-                className="flex items-start gap-1.5"
-              >
-                <span
-                  className={`text-[9px] mt-[1px] ${
-                    active
-                      ? "text-[#ee4d2d]"
-                      : "text-emerald-500"
-                  }`}
-                >
-                  ✓
-                </span>
-
-                <span className="text-[9px] text-stone-600 leading-[1.35]">
-                  {benefit}
-                </span>
-              </div>
-            )
-          )}
         </div>
       </div>
-    </div>
+    </button>
   );
 }
 
@@ -254,14 +302,23 @@ function CommissionPlanCard({
 // ============================================================
 
 export default function OverviewTab({
-  formatCurrency = (amount: number) =>
-    new Intl.NumberFormat("vi-VN", {
-      style: "currency",
-      currency: "VND",
-    }).format(amount || 0),
+  formatCurrency = (
+    amount: number
+  ) =>
+    new Intl.NumberFormat(
+      "vi-VN",
+      {
+        style: "currency",
+        currency: "VND",
+      }
+    ).format(amount || 0),
 
   onNavigateToTab,
 }: OverviewTabProps) {
+  // ==========================================================
+  // STATE
+  // ==========================================================
+
   const [isStoreActive, setIsStoreActive] =
     useState(true);
 
@@ -320,9 +377,16 @@ export default function OverviewTab({
     setIsSubmittingPayout,
   ] = useState(false);
 
-  // ============================================================
+  // ----------------------------------------------------------
+  // GÓI HỢP TÁC
+  // ----------------------------------------------------------
+
+  const [selectedPlan, setSelectedPlan] =
+    useState<CommissionPlan | null>(null);
+
+  // ==========================================================
   // 1. AUTH + MERCHANT
-  // ============================================================
+  // ==========================================================
 
   useEffect(() => {
     let unsubMerchant:
@@ -336,11 +400,13 @@ export default function OverviewTab({
           if (!user) {
             if (unsubMerchant) {
               unsubMerchant();
-              unsubMerchant = undefined;
+              unsubMerchant =
+                undefined;
             }
 
             setCurrentUser(null);
             setLoading(false);
+
             return;
           }
 
@@ -349,9 +415,9 @@ export default function OverviewTab({
           try {
             let defaultPlatformRate = 10;
 
-            // ----------------------------------------------
-            // Settings mặc định
-            // ----------------------------------------------
+            // ------------------------------------------------
+            // SETTINGS MẶC ĐỊNH
+            // ------------------------------------------------
 
             try {
               const commissionDoc =
@@ -369,12 +435,15 @@ export default function OverviewTab({
                 const data =
                   commissionDoc.data();
 
-                const rate = Number(
-                  data.platformFeePercent
-                );
+                const rate =
+                  Number(
+                    data.platformFeePercent
+                  );
 
                 if (
-                  Number.isFinite(rate) &&
+                  Number.isFinite(
+                    rate
+                  ) &&
                   rate >= 0 &&
                   rate <= 100
                 ) {
@@ -382,16 +451,18 @@ export default function OverviewTab({
                     rate;
                 }
               }
-            } catch (error) {
+            } catch (
+              error
+            ) {
               console.warn(
                 "⚠️ Không thể lấy settings/commission",
                 error
               );
             }
 
-            // ----------------------------------------------
-            // Merchant realtime
-            // ----------------------------------------------
+            // ------------------------------------------------
+            // MERCHANT REALTIME
+            // ------------------------------------------------
 
             if (unsubMerchant) {
               unsubMerchant();
@@ -430,8 +501,10 @@ export default function OverviewTab({
                     Number.isFinite(
                       parsedCommission
                     ) &&
-                    parsedCommission >= 0 &&
-                    parsedCommission <= 100
+                    parsedCommission >=
+                      0 &&
+                    parsedCommission <=
+                      100
                       ? parsedCommission
                       : defaultPlatformRate;
 
@@ -446,7 +519,6 @@ export default function OverviewTab({
                       data.name ||
                       "Quán của tôi",
 
-                    // ✅ SOURCE OF TRUTH
                     commissionPercent,
 
                     balance:
@@ -503,7 +575,9 @@ export default function OverviewTab({
                   );
                 }
               );
-          } catch (error) {
+          } catch (
+            error
+          ) {
             console.error(
               "❌ Lỗi lấy thông tin Merchant:",
               error
@@ -521,16 +595,16 @@ export default function OverviewTab({
     };
   }, []);
 
-  // ============================================================
+  // ==========================================================
   // 2. FIRESTORE REALTIME
-  // ============================================================
+  // ==========================================================
 
   useEffect(() => {
     if (!currentUser) return;
 
-    // ----------------------------------------------------------
+    // --------------------------------------------------------
     // STORE STATUS
-    // ----------------------------------------------------------
+    // --------------------------------------------------------
 
     const fetchStoreStatus =
       async () => {
@@ -547,9 +621,13 @@ export default function OverviewTab({
           if (
             storeSnap.exists()
           ) {
+            const data =
+              storeSnap.data();
+
             setIsStoreActive(
-              storeSnap.data().isOpen ??
-                true
+              Boolean(
+                data.isOpen ?? true
+              )
             );
 
             return;
@@ -567,12 +645,18 @@ export default function OverviewTab({
           if (
             merchantSnap.exists()
           ) {
+            const data =
+              merchantSnap.data();
+
             setIsStoreActive(
-              merchantSnap.data()
-                .isOpen ?? true
+              Boolean(
+                data.isOpen ?? true
+              )
             );
           }
-        } catch (error) {
+        } catch (
+          error
+        ) {
           console.error(
             "❌ Lỗi trạng thái cửa hàng:",
             error
@@ -582,18 +666,22 @@ export default function OverviewTab({
 
     fetchStoreStatus();
 
-    // ----------------------------------------------------------
+    // --------------------------------------------------------
     // ORDERS
-    // ----------------------------------------------------------
+    // --------------------------------------------------------
 
-    const ordersQuery = query(
-      collection(db, "orders"),
-      where(
-        "merchantId",
-        "==",
-        currentUser.uid
-      )
-    );
+    const ordersQuery =
+      query(
+        collection(
+          db,
+          "orders"
+        ),
+        where(
+          "merchantId",
+          "==",
+          currentUser.uid
+        )
+      );
 
     const unsubscribeOrders =
       onSnapshot(
@@ -618,12 +706,16 @@ export default function OverviewTab({
                 const subTotalCostPrice =
                   Number(
                     data.subTotalCostPrice
-                  ) || subTotalPrice;
+                  ) ||
+                  subTotalPrice;
 
                 return {
                   id: docSnap.id,
+
                   totalPrice,
+
                   subTotalPrice,
+
                   subTotalCostPrice,
 
                   shippingFee:
@@ -668,18 +760,22 @@ export default function OverviewTab({
         }
       );
 
-    // ----------------------------------------------------------
+    // --------------------------------------------------------
     // PRODUCTS
-    // ----------------------------------------------------------
+    // --------------------------------------------------------
 
-    const productsQuery = query(
-      collection(db, "products"),
-      where(
-        "merchantId",
-        "==",
-        currentUser.uid
-      )
-    );
+    const productsQuery =
+      query(
+        collection(
+          db,
+          "products"
+        ),
+        where(
+          "merchantId",
+          "==",
+          currentUser.uid
+        )
+      );
 
     const unsubscribeProducts =
       onSnapshot(
@@ -721,21 +817,22 @@ export default function OverviewTab({
         }
       );
 
-    // ----------------------------------------------------------
+    // --------------------------------------------------------
     // PAYOUTS
-    // ----------------------------------------------------------
+    // --------------------------------------------------------
 
-    const payoutQuery = query(
-      collection(
-        db,
-        "payout_requests"
-      ),
-      where(
-        "merchantId",
-        "==",
-        currentUser.uid
-      )
-    );
+    const payoutQuery =
+      query(
+        collection(
+          db,
+          "payout_requests"
+        ),
+        where(
+          "merchantId",
+          "==",
+          currentUser.uid
+        )
+      );
 
     const unsubscribePayouts =
       onSnapshot(
@@ -797,13 +894,14 @@ export default function OverviewTab({
                   : 0;
 
               return (
-                bTime - aTime
+                bTime -
+                aTime
               );
             }
           );
 
           setPayoutRequests(
-            requests
+            requests as PayoutRequest[]
           );
         },
         (error) => {
@@ -821,9 +919,9 @@ export default function OverviewTab({
     };
   }, [currentUser]);
 
-  // ============================================================
+  // ==========================================================
   // 3. METRICS
-  // ============================================================
+  // ==========================================================
 
   const {
     filteredMetrics,
@@ -833,7 +931,8 @@ export default function OverviewTab({
 
     const commissionRate =
       (merchantInfo.commissionPercent ??
-        10) / 100;
+        10) /
+      100;
 
     let pendingCount = 0;
     let completedCount = 0;
@@ -894,15 +993,16 @@ export default function OverviewTab({
             netRevenue;
         }
 
-        // ----------------------------------------------
-        // Time filter
-        // ----------------------------------------------
+        // ----------------------------------------------------
+        // TIME FILTER
+        // ----------------------------------------------------
 
         let matchesTime = true;
 
         if (orderDate) {
           if (
-            timeRange === "today"
+            timeRange ===
+            "today"
           ) {
             matchesTime =
               orderDate.getDate() ===
@@ -914,7 +1014,8 @@ export default function OverviewTab({
           }
 
           if (
-            timeRange === "month"
+            timeRange ===
+            "month"
           ) {
             matchesTime =
               orderDate.getMonth() ===
@@ -924,7 +1025,8 @@ export default function OverviewTab({
           }
 
           if (
-            timeRange === "year"
+            timeRange ===
+            "year"
           ) {
             matchesTime =
               orderDate.getFullYear() ===
@@ -953,18 +1055,18 @@ export default function OverviewTab({
           "refund",
         ].includes(status);
 
-        // ----------------------------------------------
-        // Pending
-        // ----------------------------------------------
+        // ----------------------------------------------------
+        // PENDING
+        // ----------------------------------------------------
 
         if (isPending) {
           pendingCount += 1;
           return;
         }
 
-        // ----------------------------------------------
-        // Completed
-        // ----------------------------------------------
+        // ----------------------------------------------------
+        // COMPLETED
+        // ----------------------------------------------------
 
         if (isCompleted) {
           completedCount += 1;
@@ -1021,9 +1123,9 @@ export default function OverviewTab({
           return;
         }
 
-        // ----------------------------------------------
-        // Cancelled
-        // ----------------------------------------------
+        // ----------------------------------------------------
+        // CANCELLED
+        // ----------------------------------------------------
 
         if (isCancelled) {
           cancelledCount += 1;
@@ -1034,9 +1136,9 @@ export default function OverviewTab({
           return;
         }
 
-        // ----------------------------------------------
-        // Refunded
-        // ----------------------------------------------
+        // ----------------------------------------------------
+        // REFUNDED
+        // ----------------------------------------------------
 
         if (isRefunded) {
           refundedCount += 1;
@@ -1053,9 +1155,12 @@ export default function OverviewTab({
       ).map(
         ([time, value]) => ({
           time,
-          gross: value.gross,
-          net: value.net,
-          count: value.count,
+          gross:
+            value.gross,
+          net:
+            value.net,
+          count:
+            value.count,
         })
       );
 
@@ -1115,9 +1220,9 @@ export default function OverviewTab({
     merchantInfo,
   ]);
 
-  // ============================================================
+  // ==========================================================
   // 4. CURRENT PLAN
-  // ============================================================
+  // ==========================================================
 
   const currentCommission =
     Number(
@@ -1132,13 +1237,15 @@ export default function OverviewTab({
         currentCommission
     );
 
-  // ============================================================
+  // ==========================================================
   // 5. TOGGLE STORE
-  // ============================================================
+  // ==========================================================
 
   const handleToggleStoreStatus =
     async () => {
-      if (!currentUser) return;
+      if (!currentUser) {
+        return;
+      }
 
       try {
         setIsUpdatingStore(
@@ -1155,7 +1262,9 @@ export default function OverviewTab({
             currentUser.uid
           ),
           {
-            isOpen: nextStatus,
+            isOpen:
+              nextStatus,
+
             updatedAt:
               new Date().toISOString(),
           },
@@ -1171,7 +1280,8 @@ export default function OverviewTab({
             currentUser.uid
           ),
           {
-            isOpen: nextStatus,
+            isOpen:
+              nextStatus,
           },
           {
             merge: true,
@@ -1181,7 +1291,9 @@ export default function OverviewTab({
         setIsStoreActive(
           nextStatus
         );
-      } catch (error) {
+      } catch (
+        error
+      ) {
         console.error(
           "❌ Lỗi cập nhật trạng thái:",
           error
@@ -1197,17 +1309,19 @@ export default function OverviewTab({
       }
     };
 
-  // ============================================================
+  // ==========================================================
   // 6. PAYOUT REQUEST
-  // ============================================================
+  // ==========================================================
 
   const handleCreatePayoutRequest =
     async (
-      e: React.FormEvent
+      e: FormEvent
     ) => {
       e.preventDefault();
 
-      if (!currentUser) return;
+      if (!currentUser) {
+        return;
+      }
 
       const amount =
         Number(payoutAmount);
@@ -1219,6 +1333,7 @@ export default function OverviewTab({
         alert(
           "Số tiền rút tối thiểu là 50.000 VNĐ!"
         );
+
         return;
       }
 
@@ -1233,6 +1348,7 @@ export default function OverviewTab({
             calculatedBalance
           )})!`
         );
+
         return;
       }
 
@@ -1244,6 +1360,7 @@ export default function OverviewTab({
         alert(
           "Vui lòng điền đầy đủ thông tin tài khoản ngân hàng!"
         );
+
         return;
       }
 
@@ -1322,7 +1439,9 @@ export default function OverviewTab({
         );
 
         setPayoutAmount("");
-      } catch (error) {
+      } catch (
+        error
+      ) {
         console.error(
           "❌ Lỗi tạo payout:",
           error
@@ -1338,19 +1457,22 @@ export default function OverviewTab({
       }
     };
 
-  // ============================================================
+  // ==========================================================
   // LOADING
-  // ============================================================
+  // ==========================================================
 
   if (loading) {
     return (
       <div className="flex items-center justify-center py-16">
+
         <div className="flex flex-col items-center gap-2">
+
           <div className="w-7 h-7 border-2 border-[#ee4d2d] border-t-transparent rounded-full animate-spin" />
 
           <p className="text-[10px] text-stone-400 font-bold">
             Đang tải dữ liệu quán...
           </p>
+
         </div>
       </div>
     );
@@ -1359,16 +1481,18 @@ export default function OverviewTab({
   if (!currentUser) {
     return (
       <div className="p-8 bg-white rounded-2xl border border-stone-200 text-center">
+
         <p className="text-xs text-rose-500 font-bold">
           Vui lòng đăng nhập tài khoản Cửa hàng.
         </p>
+
       </div>
     );
   }
 
-  // ============================================================
+  // ==========================================================
   // UI
-  // ============================================================
+  // ==========================================================
 
   return (
     <div className="space-y-3.5 text-xs font-sans">
@@ -1378,9 +1502,13 @@ export default function OverviewTab({
       ====================================================== */}
 
       <section className="bg-white rounded-2xl border border-stone-200/80 shadow-xs px-4 py-3.5">
+
         <div className="flex flex-wrap items-center justify-between gap-3">
+
           <div className="flex items-center gap-3 min-w-0">
+
             <div className="relative shrink-0">
+
               <div className="w-10 h-10 rounded-xl bg-orange-50 border border-orange-100 flex items-center justify-center text-lg">
                 🏪
               </div>
@@ -1392,10 +1520,13 @@ export default function OverviewTab({
                     : "bg-stone-400"
                 }`}
               />
+
             </div>
 
             <div className="min-w-0">
+
               <div className="flex flex-wrap items-center gap-1.5">
+
                 <h2 className="text-[12px] font-extrabold text-stone-800 truncate">
                   {merchantInfo.shopName ||
                     "Quán của tôi"}
@@ -1418,9 +1549,11 @@ export default function OverviewTab({
                     ? "Đang mở"
                     : "Tạm đóng"}
                 </span>
+
               </div>
 
               <div className="flex items-center gap-2 mt-0.5">
+
                 <span className="text-[9px] text-stone-400">
                   Chiết khấu Sàn
                 </span>
@@ -1440,7 +1573,9 @@ export default function OverviewTab({
                     </span>
                   </>
                 )}
+
               </div>
+
             </div>
           </div>
 
@@ -1466,78 +1601,95 @@ export default function OverviewTab({
               ? "⏸ Tạm đóng quán"
               : "▶ Mở nhận đơn"}
           </button>
+
         </div>
       </section>
 
       {/* ======================================================
-          COMMISSION PLAN
+          GÓI HỢP TÁC - 2 HÀNG
       ====================================================== */}
 
       <section className="bg-white rounded-2xl border border-stone-200/80 shadow-xs overflow-hidden">
-        <div className="px-4 pt-4 pb-3">
+
+        {/* HEADER */}
+
+        <div className="px-4 py-3 border-b border-stone-100">
+
           <div className="flex items-center justify-between gap-3">
-            <div>
-              <h3 className="text-[11px] font-extrabold uppercase tracking-wide text-stone-800">
-                Chính sách chiết khấu Sàn
-              </h3>
+
+            <div className="min-w-0">
+
+              <div className="flex items-center gap-2 flex-wrap">
+
+                <h3 className="text-[11px] font-extrabold text-stone-800">
+                  Gói hợp tác
+                </h3>
+
+                <span className="px-2 py-0.5 rounded-full bg-orange-50 text-[#ee4d2d] text-[7px] font-black">
+                  2 GÓI
+                </span>
+
+              </div>
 
               <p className="text-[9px] text-stone-400 mt-1">
-                Mức phí và quyền lợi đang áp dụng cho gian hàng.
+                Gói dịch vụ và quyền lợi dành cho gian hàng.
               </p>
+
             </div>
 
-            <span className="shrink-0 px-2 py-1 rounded-lg bg-stone-100 text-stone-500 text-[8px] font-bold">
-              Quản lý bởi Sàn
-            </span>
+            {currentPlan && (
+              <div className="shrink-0 text-right">
+
+                <div className="text-[7px] text-stone-400 uppercase font-bold">
+                  Đang sử dụng
+                </div>
+
+                <div className="flex items-center justify-end gap-1 mt-0.5">
+
+                  <span className="text-sm">
+                    {currentPlan.icon}
+                  </span>
+
+                  <span className="text-[9px] font-black text-[#ee4d2d]">
+                    {currentPlan.name}
+                  </span>
+
+                </div>
+
+              </div>
+            )}
+
           </div>
         </div>
 
-        <div className="px-4 pb-4">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+        {/* TWO ROWS */}
+
+        <div className="p-3">
+
+          <div className="grid grid-cols-1 gap-2.5">
+
             {PLATFORM_COMMISSION_PLANS.map(
               (plan) => (
                 <CommissionPlanCard
-                  key={plan.percent}
+                  key={
+                    plan.percent
+                  }
                   plan={plan}
                   active={
                     plan.percent ===
                     currentCommission
                   }
+                  onClick={() =>
+                    setSelectedPlan(
+                      plan
+                    )
+                  }
                 />
               )
             )}
+
           </div>
 
-          {/* Current summary */}
-          <div className="mt-3 rounded-xl bg-stone-50 border border-stone-200 px-3 py-2.5 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 min-w-0">
-              <span className="text-sm shrink-0">
-                {currentPlan?.icon ||
-                  "🏢"}
-              </span>
-
-              <div className="min-w-0">
-                <p className="text-[9px] font-bold text-stone-700">
-                  Gói hiện tại
-                </p>
-
-                <p className="text-[10px] text-stone-500 truncate">
-                  {currentPlan?.name ||
-                    "Theo chính sách Sàn"}
-                </p>
-              </div>
-            </div>
-
-            <div className="text-right shrink-0">
-              <div className="text-lg font-black text-[#ee4d2d] leading-none">
-                {currentCommission}%
-              </div>
-
-              <div className="text-[8px] text-stone-400 mt-1">
-                đang áp dụng
-              </div>
-            </div>
-          </div>
         </div>
       </section>
 
@@ -1546,8 +1698,11 @@ export default function OverviewTab({
       ====================================================== */}
 
       <section className="bg-stone-900 rounded-2xl text-white p-4 shadow-xs">
+
         <div className="flex flex-wrap items-center justify-between gap-3">
+
           <div>
+
             <div className="text-[9px] text-stone-400 uppercase font-bold tracking-wide">
               Số dư chờ giải ngân
             </div>
@@ -1559,14 +1714,18 @@ export default function OverviewTab({
             </div>
 
             <div className="text-[9px] text-stone-400 mt-1">
+
               Đã thanh toán:{" "}
+
               <strong className="text-stone-200">
                 {formatCurrency(
                   merchantInfo.totalWithdrawn ||
                     0
                 )}
               </strong>
+
             </div>
+
           </div>
 
           <button
@@ -1580,24 +1739,31 @@ export default function OverviewTab({
           >
             💸 Yêu cầu chuyển tiền
           </button>
+
         </div>
 
         {payoutRequests.length >
           0 && (
           <div className="mt-3 pt-3 border-t border-stone-700">
+
             <div className="text-[8px] uppercase font-bold text-stone-500 mb-2">
               Giao dịch gần đây
             </div>
 
             <div className="space-y-1.5">
+
               {payoutRequests
                 .slice(0, 3)
                 .map((req) => (
                   <div
-                    key={req.id}
+                    key={
+                      req.id
+                    }
                     className="flex items-center justify-between gap-3 bg-stone-800 rounded-xl px-2.5 py-2"
                   >
+
                     <div className="min-w-0">
+
                       <div className="text-[10px] font-bold text-white">
                         {formatCurrency(
                           req.amount
@@ -1610,6 +1776,7 @@ export default function OverviewTab({
                           req.accountNumber
                         }
                       </div>
+
                     </div>
 
                     {req.status ===
@@ -1632,32 +1799,24 @@ export default function OverviewTab({
                         Từ chối
                       </span>
                     )}
+
                   </div>
                 ))}
+
             </div>
           </div>
         )}
+
       </section>
-
-      {/* ======================================================
-          VOUCHER
-      ====================================================== */}
-
-      <VoucherManager
-        merchantId={
-          currentUser.uid
-        }
-        formatCurrency={
-          formatCurrency
-        }
-      />
 
       {/* ======================================================
           TIME FILTER
       ====================================================== */}
 
       <section className="bg-stone-100 p-1 rounded-xl border border-stone-200">
+
         <div className="grid grid-cols-4 gap-1">
+
           {[
             {
               key: "today",
@@ -1677,7 +1836,9 @@ export default function OverviewTab({
             },
           ].map((tab) => (
             <button
-              key={tab.key}
+              key={
+                tab.key
+              }
               type="button"
               onClick={() =>
                 setTimeRange(
@@ -1694,6 +1855,7 @@ export default function OverviewTab({
               {tab.label}
             </button>
           ))}
+
         </div>
       </section>
 
@@ -1702,9 +1864,13 @@ export default function OverviewTab({
       ====================================================== */}
 
       <section className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-        {/* Net */}
+
+        {/* NET */}
+
         <div className="rounded-2xl bg-gradient-to-br from-emerald-600 to-teal-700 text-white p-4">
+
           <div className="flex items-center justify-between">
+
             <span className="text-[9px] font-bold uppercase tracking-wide opacity-80">
               Thực nhận
             </span>
@@ -1712,6 +1878,7 @@ export default function OverviewTab({
             <span className="text-sm">
               💵
             </span>
+
           </div>
 
           <div className="text-xl font-black mt-2">
@@ -1723,11 +1890,15 @@ export default function OverviewTab({
           <div className="text-[8px] opacity-70 mt-1">
             Tiền món - Phí Sàn
           </div>
+
         </div>
 
-        {/* Gross */}
+        {/* GROSS */}
+
         <div className="rounded-2xl bg-white border border-stone-200 p-4">
+
           <div className="flex items-center justify-between">
+
             <span className="text-[9px] font-bold uppercase tracking-wide text-stone-500">
               Doanh thu món
             </span>
@@ -1735,6 +1906,7 @@ export default function OverviewTab({
             <span className="text-sm">
               💰
             </span>
+
           </div>
 
           <div className="text-xl font-black text-[#ee4d2d] mt-2">
@@ -1746,11 +1918,15 @@ export default function OverviewTab({
           <div className="text-[8px] text-stone-400 mt-1">
             Tổng tiền món khách trả
           </div>
+
         </div>
 
-        {/* Platform fee */}
+        {/* PLATFORM FEE */}
+
         <div className="rounded-2xl bg-white border border-stone-200 p-4">
+
           <div className="flex items-center justify-between">
+
             <span className="text-[9px] font-bold uppercase tracking-wide text-stone-500">
               Phí Sàn
             </span>
@@ -1758,6 +1934,7 @@ export default function OverviewTab({
             <span className="text-sm">
               🏢
             </span>
+
           </div>
 
           <div className="text-xl font-black text-rose-500 mt-2">
@@ -1770,7 +1947,9 @@ export default function OverviewTab({
           <div className="text-[8px] text-stone-400 mt-1">
             Theo mức {currentCommission}%
           </div>
+
         </div>
+
       </section>
 
       {/* ======================================================
@@ -1778,8 +1957,11 @@ export default function OverviewTab({
       ====================================================== */}
 
       <section className="bg-white rounded-2xl border border-stone-200 p-4">
+
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+
           <div>
+
             <h3 className="text-[11px] font-extrabold text-stone-800">
               📈 Doanh thu
             </h3>
@@ -1787,9 +1969,11 @@ export default function OverviewTab({
             <p className="text-[8px] text-stone-400 mt-0.5">
               Theo khoảng thời gian đã chọn
             </p>
+
           </div>
 
           <div className="flex items-center gap-3 text-[8px]">
+
             <span className="flex items-center gap-1 text-stone-500">
               <i className="w-2 h-2 rounded-sm bg-orange-400" />
               Bán
@@ -1799,12 +1983,17 @@ export default function OverviewTab({
               <i className="w-2 h-2 rounded-sm bg-emerald-500" />
               Thực nhận
             </span>
+
           </div>
+
         </div>
 
-        {filteredMetrics.chartData
+        {filteredMetrics
+          .chartData
           .length > 0 ? (
+
           <div className="h-44 flex items-end gap-1.5 border-b border-l border-stone-200 px-2 pb-1">
+
             {(() => {
               const maxVal =
                 Math.max(
@@ -1819,7 +2008,10 @@ export default function OverviewTab({
                 );
 
               return filteredMetrics.chartData.map(
-                (item, index) => {
+                (
+                  item,
+                  index
+                ) => {
                   const grossHeight =
                     (item.gross /
                       maxVal) *
@@ -1835,9 +2027,13 @@ export default function OverviewTab({
                       key={`${item.time}-${index}`}
                       className="flex-1 h-full flex flex-col items-center justify-end group relative min-w-0"
                     >
+
                       <div className="absolute bottom-full mb-2 hidden group-hover:flex flex-col bg-stone-900 text-white text-[8px] px-2 py-1.5 rounded-lg whitespace-nowrap z-10">
+
                         <strong className="text-amber-300">
-                          {item.time}
+                          {
+                            item.time
+                          }
                         </strong>
 
                         <span>
@@ -1853,9 +2049,11 @@ export default function OverviewTab({
                             item.net
                           )}
                         </span>
+
                       </div>
 
                       <div className="w-full h-full flex items-end justify-center gap-0.5">
+
                         <div
                           style={{
                             height: `${Math.max(
@@ -1875,19 +2073,27 @@ export default function OverviewTab({
                           }}
                           className="w-[42%] bg-emerald-500 rounded-t"
                         />
+
                       </div>
 
                       <span className="text-[7px] text-stone-400 font-bold mt-1 truncate max-w-full">
-                        {item.time}
+                        {
+                          item.time
+                        }
                       </span>
+
                     </div>
                   );
                 }
               );
             })()}
+
           </div>
+
         ) : (
+
           <div className="h-36 rounded-xl bg-stone-50 border border-dashed border-stone-200 flex flex-col items-center justify-center text-stone-400">
+
             <span className="text-lg">
               📊
             </span>
@@ -1895,8 +2101,10 @@ export default function OverviewTab({
             <span className="text-[9px] font-bold mt-1">
               Chưa có dữ liệu
             </span>
+
           </div>
         )}
+
       </section>
 
       {/* ======================================================
@@ -1904,10 +2112,21 @@ export default function OverviewTab({
       ====================================================== */}
 
       <section className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+
+        {/* COMPLETED */}
+
         <div className="bg-white rounded-2xl border border-stone-200 p-3">
+
           <div className="flex justify-between text-[8px] uppercase font-bold text-stone-400">
-            <span>Thành công</span>
-            <span>✅</span>
+
+            <span>
+              Thành công
+            </span>
+
+            <span>
+              ✅
+            </span>
+
           </div>
 
           <div className="text-lg font-black text-emerald-600 mt-1">
@@ -1919,28 +2138,52 @@ export default function OverviewTab({
           <div className="text-[8px] text-stone-400">
             đơn
           </div>
+
         </div>
 
+        {/* CANCELLED */}
+
         <div className="bg-white rounded-2xl border border-stone-200 p-3">
+
           <div className="flex justify-between text-[8px] uppercase font-bold text-stone-400">
-            <span>Hủy / hoàn</span>
-            <span>🚫</span>
+
+            <span>
+              Hủy / hoàn
+            </span>
+
+            <span>
+              🚫
+            </span>
+
           </div>
 
           <div className="text-lg font-black text-rose-500 mt-1">
-            {filteredMetrics.cancelledCount +
-              filteredMetrics.refundedCount}
+            {
+              filteredMetrics.cancelledCount +
+              filteredMetrics.refundedCount
+            }
           </div>
 
           <div className="text-[8px] text-stone-400">
             đơn
           </div>
+
         </div>
 
+        {/* REFUND */}
+
         <div className="bg-white rounded-2xl border border-stone-200 p-3">
+
           <div className="flex justify-between text-[8px] uppercase font-bold text-stone-400">
-            <span>Giá trị hoàn</span>
-            <span>💸</span>
+
+            <span>
+              Giá trị hoàn
+            </span>
+
+            <span>
+              💸
+            </span>
+
           </div>
 
           <div className="text-sm font-black text-stone-700 mt-2">
@@ -1948,12 +2191,23 @@ export default function OverviewTab({
               filteredMetrics.totalRefundedAmount
             )}
           </div>
+
         </div>
 
+        {/* CANCEL RATE */}
+
         <div className="bg-white rounded-2xl border border-stone-200 p-3">
+
           <div className="flex justify-between text-[8px] uppercase font-bold text-stone-400">
-            <span>Tỷ lệ hủy</span>
-            <span>📊</span>
+
+            <span>
+              Tỷ lệ hủy
+            </span>
+
+            <span>
+              📊
+            </span>
+
           </div>
 
           <div
@@ -1967,8 +2221,10 @@ export default function OverviewTab({
           >
             {
               filteredMetrics.cancelRate
-            }%
+            }
+            %
           </div>
+
         </div>
       </section>
 
@@ -1977,35 +2233,49 @@ export default function OverviewTab({
       ====================================================== */}
 
       <section className="bg-amber-50 border border-amber-200 rounded-2xl p-3.5">
+
         <div className="flex items-center justify-between mb-2.5">
+
           <div className="flex items-center gap-2">
+
             <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
 
             <h3 className="text-[10px] font-extrabold text-amber-900">
               Việc cần xử lý
             </h3>
+
           </div>
 
           <span className="text-[8px] bg-amber-200 text-amber-800 px-2 py-1 rounded-full font-bold">
-            {filteredMetrics.pendingCount +
-              outOfStockCount}{" "}
+            {
+              filteredMetrics.pendingCount +
+              outOfStockCount
+            }{" "}
             việc
           </span>
+
         </div>
 
         <div className="grid sm:grid-cols-2 gap-2">
-          {/* Orders */}
+
+          {/* ORDERS */}
+
           <div className="bg-white rounded-xl border border-amber-100 px-3 py-2.5 flex items-center justify-between gap-2">
+
             <div className="min-w-0">
+
               <div className="text-[10px] font-bold text-stone-800">
                 🛒{" "}
-                {filteredMetrics.pendingCount}{" "}
+                {
+                  filteredMetrics.pendingCount
+                }{" "}
                 đơn chờ xử lý
               </div>
 
               <p className="text-[8px] text-stone-400 mt-0.5">
                 Kiểm tra và xác nhận đơn mới.
               </p>
+
             </div>
 
             <button
@@ -2019,19 +2289,27 @@ export default function OverviewTab({
             >
               Xử lý
             </button>
+
           </div>
 
-          {/* Products */}
+          {/* PRODUCTS */}
+
           <div className="bg-white rounded-xl border border-amber-100 px-3 py-2.5 flex items-center justify-between gap-2">
+
             <div className="min-w-0">
+
               <div className="text-[10px] font-bold text-stone-800">
-                🚫 {outOfStockCount}{" "}
+                🚫{" "}
+                {
+                  outOfStockCount
+                }{" "}
                 món hết hàng
               </div>
 
               <p className="text-[8px] text-stone-400 mt-0.5">
                 Cập nhật trạng thái sản phẩm.
               </p>
+
             </div>
 
             <button
@@ -2045,9 +2323,340 @@ export default function OverviewTab({
             >
               Cập nhật
             </button>
+
           </div>
+
         </div>
       </section>
+
+      {/* ======================================================
+          PLAN DETAIL MODAL
+      ====================================================== */}
+
+      {selectedPlan && (
+        <div
+          className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() =>
+            setSelectedPlan(null)
+          }
+        >
+
+          <div
+            className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden"
+            onClick={(e) =>
+              e.stopPropagation()
+            }
+          >
+
+            {/* HEADER */}
+
+            <div
+              className={`relative px-4 py-4 ${
+                selectedPlan.percent ===
+                currentCommission
+                  ? "bg-gradient-to-br from-orange-50 to-white"
+                  : "bg-stone-50"
+              }`}
+            >
+
+              {selectedPlan.percent ===
+                currentCommission && (
+                <div className="absolute left-0 top-0 right-0 h-1 bg-[#ee4d2d]" />
+              )}
+
+              <div className="flex items-start justify-between gap-3">
+
+                <div className="flex items-center gap-3 min-w-0">
+
+                  <div
+                    className={`w-12 h-12 rounded-xl flex items-center justify-center text-2xl shrink-0 ${
+                      selectedPlan.percent ===
+                      currentCommission
+                        ? "bg-orange-100"
+                        : "bg-white border border-stone-200"
+                    }`}
+                  >
+                    {
+                      selectedPlan.icon
+                    }
+                  </div>
+
+                  <div className="min-w-0">
+
+                    <div className="flex flex-wrap items-center gap-2">
+
+                      <h3 className="text-[14px] font-black text-stone-800">
+                        Gói{" "}
+                        {
+                          selectedPlan.name
+                        }
+                      </h3>
+
+                      {selectedPlan.percent ===
+                        currentCommission && (
+                        <span className="px-1.5 py-0.5 rounded-full bg-[#ee4d2d] text-white text-[7px] font-black">
+                          ĐANG DÙNG
+                        </span>
+                      )}
+
+                    </div>
+
+                    <p className="text-[9px] text-stone-400 mt-1 leading-4">
+                      {
+                        selectedPlan.description
+                      }
+                    </p>
+
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSelectedPlan(
+                      null
+                    )
+                  }
+                  className="w-7 h-7 rounded-lg bg-white/80 border border-stone-200 text-stone-500 hover:bg-stone-100 shrink-0"
+                  aria-label="Đóng"
+                >
+                  ✕
+                </button>
+
+              </div>
+
+              {/* COMMISSION */}
+
+              <div className="mt-4 flex items-end justify-between gap-3">
+
+                <div>
+
+                  <div
+                    className={`text-3xl font-black leading-none ${
+                      selectedPlan.percent ===
+                      currentCommission
+                        ? "text-[#ee4d2d]"
+                        : "text-stone-800"
+                    }`}
+                  >
+                    {
+                      selectedPlan.percent
+                    }
+                    %
+                  </div>
+
+                  <div className="text-[8px] uppercase tracking-wide text-stone-400 font-bold mt-1.5">
+                    Chiết khấu Sàn
+                  </div>
+
+                </div>
+
+                <div className="text-right min-w-0">
+
+                  <div className="text-[8px] text-stone-400">
+                    Gian hàng
+                  </div>
+
+                  <div className="text-[9px] font-bold text-stone-700 mt-0.5 truncate max-w-[180px]">
+                    {merchantInfo.shopName ||
+                      "Quán của tôi"}
+                  </div>
+
+                </div>
+
+              </div>
+
+            </div>
+
+            {/* BODY */}
+
+            <div className="p-4 space-y-4 max-h-[65vh] overflow-y-auto">
+
+              {/* POLICY */}
+
+              <div>
+
+                <div className="flex items-center gap-2 mb-2.5">
+
+                  <span className="w-6 h-6 rounded-lg bg-stone-100 flex items-center justify-center text-xs">
+                    📋
+                  </span>
+
+                  <h4 className="text-[10px] font-black uppercase tracking-wide text-stone-800">
+                    Chính sách gói
+                  </h4>
+
+                </div>
+
+                <div className="rounded-xl border border-stone-200 overflow-hidden">
+
+                  <div className="flex items-center justify-between px-3 py-2.5 border-b border-stone-100">
+
+                    <span className="text-[9px] text-stone-500">
+                      Mức chiết khấu
+                    </span>
+
+                    <strong className="text-[10px] text-[#ee4d2d]">
+                      {
+                        selectedPlan.percent
+                      }
+                      %
+                    </strong>
+
+                  </div>
+
+                  <div className="flex items-center justify-between px-3 py-2.5 border-b border-stone-100">
+
+                    <span className="text-[9px] text-stone-500">
+                      Nền tảng
+                    </span>
+
+                    <strong className="text-[9px] text-stone-700">
+                      Anvami
+                    </strong>
+
+                  </div>
+
+                  <div className="flex items-center justify-between px-3 py-2.5">
+
+                    <span className="text-[9px] text-stone-500">
+                      Đối tượng
+                    </span>
+
+                    <strong className="text-[9px] text-stone-700">
+                      Gian hàng đối tác
+                    </strong>
+
+                  </div>
+
+                </div>
+              </div>
+
+              {/* BENEFITS */}
+
+              <div>
+
+                <div className="flex items-center gap-2 mb-2.5">
+
+                  <span className="w-6 h-6 rounded-lg bg-emerald-50 flex items-center justify-center text-xs">
+                    ✓
+                  </span>
+
+                  <h4 className="text-[10px] font-black uppercase tracking-wide text-stone-800">
+                    Quyền lợi & ưu đãi
+                  </h4>
+
+                </div>
+
+                <div className="space-y-2">
+
+                  {selectedPlan.benefits.map(
+                    (
+                      benefit,
+                      index
+                    ) => (
+                      <div
+                        key={`${selectedPlan.percent}-${index}`}
+                        className="flex items-start gap-2.5 rounded-xl bg-stone-50 border border-stone-100 px-3 py-2.5"
+                      >
+
+                        <span
+                          className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-black shrink-0 ${
+                            selectedPlan.percent ===
+                            currentCommission
+                              ? "bg-orange-100 text-[#ee4d2d]"
+                              : "bg-emerald-50 text-emerald-600"
+                          }`}
+                        >
+                          ✓
+                        </span>
+
+                        <span className="text-[9px] text-stone-600 leading-4">
+                          {
+                            benefit
+                          }
+                        </span>
+
+                      </div>
+                    )
+                  )}
+
+                </div>
+              </div>
+
+              {/* CURRENT NOTICE */}
+
+              {selectedPlan.percent ===
+                currentCommission && (
+                <div className="rounded-xl border border-orange-200 bg-orange-50 px-3 py-2.5">
+
+                  <div className="flex items-start gap-2">
+
+                    <span className="text-sm">
+                      ⭐
+                    </span>
+
+                    <div>
+
+                      <p className="text-[9px] font-black text-orange-800">
+                        Đây là gói quán đang sử dụng
+                      </p>
+
+                      <p className="text-[8px] text-orange-700/70 mt-0.5 leading-4">
+                        Các quyền lợi và chương trình ưu đãi
+                        được áp dụng theo chính sách hiện hành
+                        của Sàn.
+                      </p>
+
+                    </div>
+
+                  </div>
+
+                </div>
+              )}
+
+            </div>
+
+            {/* FOOTER */}
+
+            <div className="px-4 py-3 border-t border-stone-100 bg-stone-50 flex items-center justify-between gap-3">
+
+              <div>
+
+                <div className="text-[8px] text-stone-400">
+                  Gói hợp tác
+                </div>
+
+                <div className="text-[10px] font-black text-stone-700 mt-0.5">
+                  {
+                    selectedPlan.name
+                  }{" "}
+                  •{" "}
+                  {
+                    selectedPlan.percent
+                  }
+                  %
+                </div>
+
+              </div>
+
+              <button
+                type="button"
+                onClick={() =>
+                  setSelectedPlan(
+                    null
+                  )
+                }
+                className="px-3.5 py-2 rounded-xl bg-stone-800 text-white text-[9px] font-bold hover:bg-stone-700"
+              >
+                Đã hiểu
+              </button>
+
+            </div>
+
+          </div>
+        </div>
+      )}
 
       {/* ======================================================
           PAYOUT MODAL
@@ -2055,10 +2664,15 @@ export default function OverviewTab({
 
       {isPayoutModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+
           <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden">
-            {/* Modal header */}
+
+            {/* HEADER */}
+
             <div className="px-4 py-3.5 border-b border-stone-100 flex items-center justify-between">
+
               <div>
+
                 <h3 className="text-[12px] font-extrabold text-stone-800">
                   Yêu cầu chuyển tiền
                 </h3>
@@ -2066,6 +2680,7 @@ export default function OverviewTab({
                 <p className="text-[9px] text-stone-400 mt-0.5">
                   Chuyển số dư về tài khoản ngân hàng của quán.
                 </p>
+
               </div>
 
               <button
@@ -2076,10 +2691,14 @@ export default function OverviewTab({
                   )
                 }
                 className="w-7 h-7 rounded-lg bg-stone-100 text-stone-500 hover:bg-stone-200"
+                aria-label="Đóng"
               >
                 ✕
               </button>
+
             </div>
+
+            {/* FORM */}
 
             <form
               onSubmit={
@@ -2087,8 +2706,11 @@ export default function OverviewTab({
               }
               className="p-4 space-y-3"
             >
-              {/* Amount */}
+
+              {/* AMOUNT */}
+
               <div>
+
                 <label className="block text-[9px] font-bold text-stone-500 uppercase mb-1">
                   Số tiền muốn rút
                 </label>
@@ -2100,7 +2722,9 @@ export default function OverviewTab({
                     calculatedBalance
                   }
                   required
-                  value={payoutAmount}
+                  value={
+                    payoutAmount
+                  }
                   onChange={(e) =>
                     setPayoutAmount(
                       e.target.value
@@ -2111,29 +2735,38 @@ export default function OverviewTab({
                 />
 
                 <div className="text-[8px] text-stone-400 mt-1">
+
                   Khả dụng:{" "}
+
                   <strong className="text-emerald-600">
                     {formatCurrency(
                       calculatedBalance
                     )}
                   </strong>
+
                 </div>
+
               </div>
 
-              {/* Bank */}
+              {/* BANK */}
+
               <div className="border-t border-stone-100 pt-3 space-y-2.5">
+
                 <div className="text-[10px] font-bold text-stone-700">
                   Tài khoản nhận tiền
                 </div>
 
                 <div>
+
                   <label className="block text-[8px] text-stone-500 mb-1">
                     Ngân hàng
                   </label>
 
                   <input
                     required
-                    value={bankName}
+                    value={
+                      bankName
+                    }
                     onChange={(e) =>
                       setBankName(
                         e.target.value
@@ -2142,9 +2775,11 @@ export default function OverviewTab({
                     placeholder="VD: Vietcombank"
                     className="w-full px-3 py-2 rounded-xl bg-stone-50 border border-stone-200 text-[10px]"
                   />
+
                 </div>
 
                 <div>
+
                   <label className="block text-[8px] text-stone-500 mb-1">
                     Số tài khoản
                   </label>
@@ -2162,9 +2797,11 @@ export default function OverviewTab({
                     placeholder="Nhập số tài khoản"
                     className="w-full px-3 py-2 rounded-xl bg-stone-50 border border-stone-200 text-[10px] font-mono font-bold"
                   />
+
                 </div>
 
                 <div>
+
                   <label className="block text-[8px] text-stone-500 mb-1">
                     Tên chủ tài khoản
                   </label>
@@ -2182,11 +2819,15 @@ export default function OverviewTab({
                     placeholder="NGUYEN VAN A"
                     className="w-full px-3 py-2 rounded-xl bg-stone-50 border border-stone-200 text-[10px] font-bold uppercase"
                   />
+
                 </div>
+
               </div>
 
-              {/* Footer */}
+              {/* FOOTER */}
+
               <div className="pt-3 border-t border-stone-100 flex gap-2 justify-end">
+
                 <button
                   type="button"
                   onClick={() =>
@@ -2210,11 +2851,14 @@ export default function OverviewTab({
                     ? "Đang gửi..."
                     : "Gửi yêu cầu"}
                 </button>
+
               </div>
+
             </form>
           </div>
         </div>
       )}
+
     </div>
   );
 }
