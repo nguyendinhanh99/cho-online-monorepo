@@ -8,13 +8,18 @@ import {
   useRef,
 } from "react";
 import { useCartStore } from "@/store/useCartStore";
-import { db } from "@cho-online/firebase";
+import { auth, db } from "@cho-online/firebase";
 import {
   collection,
+  doc,
+  getDoc,
   getDocs,
   query,
+  serverTimestamp,
+  updateDoc,
   where,
 } from "firebase/firestore";
+import { onAuthStateChanged } from "firebase/auth";
 
 import ProductDetailModal from "@/components/ProductDetailModal";
 import ShopDetailModal from "@/components/ShopDetailModal";
@@ -1254,6 +1259,15 @@ export default function HomePage() {
     setIsLocating,
   ] = useState(false);
 
+  /**
+   * Chỉ bật fallback GPS sau khi đã thử đọc hồ sơ tài khoản.
+   * Điều này tránh GPS ghi đè địa chỉ đã lưu của người dùng.
+   */
+  const [
+    isUserProfileResolved,
+    setIsUserProfileResolved,
+  ] = useState(false);
+
   const [
     timeLeft,
     setTimeLeft,
@@ -1271,6 +1285,19 @@ export default function HomePage() {
    */
   const autoLocatedAddressRef =
     useRef("");
+
+  /**
+   * Document user thực tế trong Firestore.
+   * Không giả định document ID luôn bằng Firebase Auth UID.
+   */
+  const activeUserDocIdRef =
+    useRef<string | null>(null);
+
+  /**
+   * Ngăn auto-location chạy lặp lại khi Safari/Chrome từ chối GPS.
+   */
+  const autoLocationAttemptedRef =
+    useRef(false);
 
   /**
    * ==========================================================
@@ -1546,98 +1573,427 @@ export default function HomePage() {
 
   /**
    * ==========================================================
-   * USER FROM FIREBASE
+   * USER FROM FIREBASE AUTH + FIRESTORE
    * ==========================================================
+   *
+   * Ưu tiên:
+   *
+   * 1. users/{uid}
+   * 2. field uid
+   * 3. phone
+   * 4. phoneNumber
+   * 5. email
+   *
+   * Hỗ trợ đồng thời:
+   *
+   * - lat / lng
+   * - latitude / longitude
+   * - location.lat / location.lng
+   * - location.latitude / location.longitude
    */
-
   useEffect(() => {
     let cancelled = false;
 
-    const fetchUser =
-      async () => {
+    const toNumberOrNull = (
+      value: unknown
+    ): number | null => {
+      if (
+        value === null ||
+        value === undefined ||
+        value === ""
+      ) {
+        return null;
+      }
+
+      const parsed =
+        Number(value);
+
+      return Number.isFinite(parsed)
+        ? parsed
+        : null;
+    };
+
+    const applyUserData = (
+      userData: any,
+      docId: string,
+      fallbackPhone = ""
+    ) => {
+      if (
+        cancelled ||
+        !userData
+      ) {
+        return;
+      }
+
+      activeUserDocIdRef.current =
+        docId;
+
+      const location =
+        userData.location &&
+        typeof userData.location ===
+          "object"
+          ? userData.location
+          : {};
+
+      const lat =
+        toNumberOrNull(
+          userData.lat ??
+            userData.latitude ??
+            location.lat ??
+            location.latitude
+        );
+
+      const lng =
+        toNumberOrNull(
+          userData.lng ??
+            userData.longitude ??
+            location.lng ??
+            location.longitude
+        );
+
+      const address =
+        String(
+          userData.address ??
+            userData.streetAddress ??
+            userData.shippingAddress ??
+            userData.deliveryAddress ??
+            location.address ??
+            ""
+        ).trim();
+
+      const phone =
+        String(
+          userData.phone ??
+            userData.phoneNumber ??
+            fallbackPhone ??
+            ""
+        ).trim();
+
+      setUserInfo((prev) => ({
+        ...prev,
+
+        customerName:
+          userData.fullName ||
+          userData.name ||
+          userData.customerName ||
+          prev.customerName,
+
+        customerPhone:
+          phone ||
+          prev.customerPhone,
+
+        address:
+          address ||
+          prev.address,
+
+        lat:
+          lat ??
+          prev.lat,
+
+        lng:
+          lng ??
+          prev.lng,
+      }));
+
+      /**
+       * Giữ tương thích với các màn hình cũ
+       * đang dùng localStorage user_phone.
+       */
+      if (phone) {
         try {
-          const targetPhone =
-            localStorage.getItem(
-              "user_phone"
-            );
-
-          if (!targetPhone) {
-            return;
-          }
-
-          const usersRef =
-            collection(
-              db,
-              "users"
-            );
-
-          const q = query(
-            usersRef,
-            where(
-              "phone",
-              "==",
-              targetPhone
-            )
+          localStorage.setItem(
+            "user_phone",
+            phone
           );
+        } catch {
+          // Safari Private Browsing hoặc storage không khả dụng.
+        }
+      }
+    };
 
+    const findUserByField =
+      async (
+        field: string,
+        value: string
+      ): Promise<{
+        id: string;
+        data: any;
+      } | null> => {
+        if (!value) {
+          return null;
+        }
+
+        try {
           const snapshot =
-            await getDocs(q);
+            await getDocs(
+              query(
+                collection(
+                  db,
+                  "users"
+                ),
+                where(
+                  field,
+                  "==",
+                  value
+                )
+              )
+            );
 
           if (
             cancelled ||
             snapshot.empty
           ) {
-            return;
+            return null;
           }
 
-          const userData =
-            snapshot.docs[0].data();
+          const first =
+            snapshot.docs[0];
 
-          setUserInfo((prev) => ({
-            ...prev,
-
-            customerName:
-              userData.fullName ||
-              userData.name ||
-              userData.customerName ||
-              prev.customerName,
-
-            customerPhone:
-              userData.phone ||
-              userData.phoneNumber ||
-              targetPhone,
-
-            address:
-              userData.address ||
-              userData.streetAddress ||
-              prev.address,
-
-            lat:
-              userData.lat ??
-              userData.location
-                ?.latitude ??
-              prev.lat,
-
-            lng:
-              userData.lng ??
-              userData.location
-                ?.longitude ??
-              prev.lng,
-          }));
+          return {
+            id: first.id,
+            data: first.data(),
+          };
         } catch (error) {
-          if (!cancelled) {
-            console.error(
-              "❌ Lỗi tải user:",
-              error
-            );
-          }
+          console.warn(
+            `⚠️ Không tìm được user theo ${field}:`,
+            error
+          );
+
+          return null;
         }
       };
 
-    void fetchUser();
+    const getPhoneVariants = (
+      phone: string
+    ): string[] => {
+      const cleaned =
+        String(phone || "")
+          .replace(/\s+/g, "")
+          .trim();
+
+      if (!cleaned) {
+        return [];
+      }
+
+      const variants =
+        new Set<string>();
+
+      variants.add(cleaned);
+
+      if (
+        cleaned.startsWith(
+          "+84"
+        )
+      ) {
+        variants.add(
+          `0${cleaned.slice(3)}`
+        );
+      }
+
+      if (
+        cleaned.startsWith("0")
+      ) {
+        variants.add(
+          `+84${cleaned.slice(1)}`
+        );
+      }
+
+      return Array.from(
+        variants
+      );
+    };
+
+    const unsubscribe =
+      onAuthStateChanged(
+        auth,
+        async (
+          firebaseUser
+        ) => {
+          try {
+            const localPhone =
+              String(
+                localStorage.getItem(
+                  "user_phone"
+                ) || ""
+              ).trim();
+
+            const authPhone =
+              String(
+                firebaseUser
+                  ?.phoneNumber || ""
+              ).trim();
+
+            /**
+             * --------------------------------------------------
+             * 1. Firebase Auth UID
+             * --------------------------------------------------
+             */
+            if (
+              firebaseUser?.uid
+            ) {
+              /**
+               * Trường hợp chuẩn:
+               * users/{uid}
+               */
+              try {
+                const userRef =
+                  doc(
+                    db,
+                    "users",
+                    firebaseUser.uid
+                  );
+
+                const userSnap =
+                  await getDoc(
+                    userRef
+                  );
+
+                if (
+                  userSnap.exists()
+                ) {
+                  applyUserData(
+                    userSnap.data(),
+                    userSnap.id,
+                    authPhone ||
+                      localPhone
+                  );
+
+                  return;
+                }
+              } catch (error) {
+                console.warn(
+                  "⚠️ Không đọc được users/{uid}:",
+                  error
+                );
+              }
+
+              /**
+               * Trường hợp document ID khác UID
+               * nhưng document có field uid.
+               */
+              const byUid =
+                await findUserByField(
+                  "uid",
+                  firebaseUser.uid
+                );
+
+              if (byUid) {
+                applyUserData(
+                  byUid.data,
+                  byUid.id,
+                  authPhone ||
+                    localPhone
+                );
+
+                return;
+              }
+            }
+
+            /**
+             * --------------------------------------------------
+             * 2. Số điện thoại
+             * --------------------------------------------------
+             *
+             * Thử cả 0865... và +84865...
+             */
+            const phoneVariants =
+              new Set<string>([
+                ...getPhoneVariants(
+                  authPhone
+                ),
+                ...getPhoneVariants(
+                  localPhone
+                ),
+              ]);
+
+            for (
+              const phone
+              of phoneVariants
+            ) {
+              const byPhone =
+                await findUserByField(
+                  "phone",
+                  phone
+                );
+
+              if (byPhone) {
+                applyUserData(
+                  byPhone.data,
+                  byPhone.id,
+                  phone
+                );
+
+                return;
+              }
+
+              const byPhoneNumber =
+                await findUserByField(
+                  "phoneNumber",
+                  phone
+                );
+
+              if (
+                byPhoneNumber
+              ) {
+                applyUserData(
+                  byPhoneNumber.data,
+                  byPhoneNumber.id,
+                  phone
+                );
+
+                return;
+              }
+            }
+
+            /**
+             * --------------------------------------------------
+             * 3. Email
+             * --------------------------------------------------
+             */
+            if (
+              firebaseUser?.email
+            ) {
+              const byEmail =
+                await findUserByField(
+                  "email",
+                  firebaseUser.email
+                );
+
+              if (byEmail) {
+                applyUserData(
+                  byEmail.data,
+                  byEmail.id,
+                  authPhone ||
+                    localPhone
+                );
+
+                return;
+              }
+            }
+
+            console.warn(
+              "⚠️ Không tìm thấy hồ sơ người dùng trong collection users."
+            );
+          } catch (error) {
+            if (!cancelled) {
+              console.error(
+                "❌ Lỗi tải thông tin người dùng:",
+                error
+              );
+            }
+          } finally {
+            if (!cancelled) {
+              setIsUserProfileResolved(
+                true
+              );
+            }
+          }
+        }
+      );
 
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, []);
 
@@ -1680,11 +2036,15 @@ export default function HomePage() {
 
         lat:
           parsed.location
+            ?.lat ??
+          parsed.location
             ?.latitude ??
           parsed.lat ??
           prev.lat,
 
         lng:
+          parsed.location
+            ?.lng ??
           parsed.location
             ?.longitude ??
           parsed.lng ??
@@ -1953,19 +2313,247 @@ export default function HomePage() {
 
   /**
    * ==========================================================
-   * DETECT CURRENT LOCATION
+   * SAVE LOCATION
+   * ==========================================================
+   *
+   * Lưu đồng thời:
+   *
+   * - React state
+   * - localStorage
+   * - Firestore user hiện tại (nếu tìm thấy)
+   *
+   * Firestore là best-effort:
+   * nếu rules không cho phép update, trải nghiệm trên trang
+   * vẫn tiếp tục hoạt động bằng localStorage.
+   */
+  const persistUserLocation =
+    useCallback(
+      async (
+        address: string,
+        lat: number,
+        lng: number
+      ) => {
+        /**
+         * --------------------------------------------------
+         * LOCAL STORAGE
+         * --------------------------------------------------
+         */
+        try {
+          const previousRaw =
+            localStorage.getItem(
+              "user_shipping_info"
+            );
+
+          let previous:
+            Record<
+              string,
+              any
+            > = {};
+
+          if (
+            previousRaw
+          ) {
+            try {
+              previous =
+                JSON.parse(
+                  previousRaw
+                );
+            } catch {
+              previous = {};
+            }
+          }
+
+          localStorage.setItem(
+            "user_shipping_info",
+            JSON.stringify({
+              ...previous,
+
+              address,
+              lat,
+              lng,
+
+              location: {
+                ...(
+                  previous.location ||
+                  {}
+                ),
+
+                /**
+                 * Lưu cả 2 schema để tương thích
+                 * code cũ và code mới.
+                 */
+                lat,
+                lng,
+                latitude: lat,
+                longitude: lng,
+                address,
+              },
+            })
+          );
+        } catch (error) {
+          console.warn(
+            "⚠️ Không thể lưu vị trí vào localStorage:",
+            error
+          );
+        }
+
+        /**
+         * --------------------------------------------------
+         * FIRESTORE ACCOUNT
+         * --------------------------------------------------
+         */
+        try {
+          let userDocId =
+            activeUserDocIdRef.current;
+
+          /**
+           * Nếu người dùng bấm GPS rất sớm,
+           * profile effect có thể chưa gán doc id.
+           * Thử document users/{uid} trước.
+           */
+          if (
+            !userDocId &&
+            auth.currentUser?.uid
+          ) {
+            const fallbackRef =
+              doc(
+                db,
+                "users",
+                auth.currentUser.uid
+              );
+
+            const fallbackSnap =
+              await getDoc(
+                fallbackRef
+              );
+
+            if (
+              fallbackSnap.exists()
+            ) {
+              userDocId =
+                fallbackSnap.id;
+
+              activeUserDocIdRef.current =
+                fallbackSnap.id;
+            }
+          }
+
+          if (!userDocId) {
+            return;
+          }
+
+          await updateDoc(
+            doc(
+              db,
+              "users",
+              userDocId
+            ),
+            {
+              address,
+              lat,
+              lng,
+
+              "location.lat":
+                lat,
+
+              "location.lng":
+                lng,
+
+              "location.latitude":
+                lat,
+
+              "location.longitude":
+                lng,
+
+              "location.address":
+                address,
+
+              updatedAt:
+                serverTimestamp(),
+            }
+          );
+        } catch (error) {
+          /**
+           * Không làm hỏng UI nếu Firestore rules
+           * chưa cho phép user tự update.
+           */
+          console.warn(
+            "⚠️ Không thể đồng bộ vị trí lên Firestore:",
+            error
+          );
+        }
+      },
+      []
+    );
+
+  /**
+   * ==========================================================
+   * GEOLOCATION PROMISE
    * ==========================================================
    */
+  const getBrowserPosition =
+    useCallback(
+      (
+        options:
+          PositionOptions
+      ) =>
+        new Promise<
+          GeolocationPosition
+        >(
+          (
+            resolve,
+            reject
+          ) => {
+            navigator.geolocation.getCurrentPosition(
+              resolve,
+              reject,
+              options
+            );
+          }
+        ),
+      []
+    );
 
+  /**
+   * ==========================================================
+   * DETECT CURRENT LOCATION
+   * Safari / Chrome / Edge / Mobile
+   * ==========================================================
+   */
   const detectCurrentLocation =
     useCallback(async () => {
       if (
-        typeof window === "undefined" ||
-        !navigator.geolocation
+        typeof window ===
+        "undefined"
+      ) {
+        return;
+      }
+
+      /**
+       * Geolocation yêu cầu HTTPS
+       * (localhost là ngoại lệ khi dev).
+       */
+      if (
+        !window.isSecureContext
+      ) {
+        showToast(
+          "Không thể sử dụng vị trí",
+          "Định vị chỉ hoạt động trên kết nối HTTPS an toàn.",
+          "warning"
+        );
+
+        return;
+      }
+
+      if (
+        !(
+          "geolocation" in
+          navigator
+        )
       ) {
         showToast(
           "Không hỗ trợ vị trí",
-          "Trình duyệt của bạn không hỗ trợ định vị.",
+          "Trình duyệt hoặc thiết bị này không hỗ trợ định vị.",
           "warning"
         );
 
@@ -1974,205 +2562,238 @@ export default function HomePage() {
 
       setIsLocating(true);
 
-      navigator.geolocation.getCurrentPosition(
-        async (position) => {
-          try {
-            const lat =
-              position.coords.latitude;
+      try {
+        let position:
+          GeolocationPosition;
 
-            const lng =
-              position.coords.longitude;
-
-            const detectedAddress =
-              await reverseGeocodeLocation(
-                lat,
-                lng
-              );
-
-            const address =
-              detectedAddress ||
-              "Vị trí hiện tại";
-
-            /**
-             * Đánh dấu để effect geocode bên dưới
-             * không thay tọa độ GPS bằng tọa độ geocode
-             * từ chuỗi địa chỉ.
-             */
-            autoLocatedAddressRef.current =
-              address;
-
-            setUserInfo((prev) => ({
-              ...prev,
-              address,
-              lat,
-              lng,
-            }));
-
-            /**
-             * Lưu lại vị trí cho lần truy cập tiếp theo.
-             */
-            try {
-              const previousRaw =
-                localStorage.getItem(
-                  "user_shipping_info"
-                );
-
-              let previous: any = {};
-
-              if (previousRaw) {
-                try {
-                  previous =
-                    JSON.parse(previousRaw);
-                } catch {
-                  previous = {};
-                }
+        /**
+         * --------------------------------------------------
+         * LẦN 1: ưu tiên GPS chính xác cao
+         * --------------------------------------------------
+         */
+        try {
+          position =
+            await getBrowserPosition(
+              {
+                enableHighAccuracy:
+                  true,
+                timeout:
+                  20_000,
+                maximumAge:
+                  30_000,
               }
-
-              localStorage.setItem(
-                "user_shipping_info",
-                JSON.stringify({
-                  ...previous,
-                  address,
-                  lat,
-                  lng,
-                  location: {
-                    ...(previous.location ||
-                      {}),
-                    latitude: lat,
-                    longitude: lng,
-                  },
-                })
-              );
-            } catch (error) {
-              console.warn(
-                "Không thể lưu vị trí:",
-                error
-              );
-            }
-
-            showToast(
-              "Đã xác định vị trí 📍",
-              detectedAddress
-                ? "Đã cập nhật địa chỉ hiện tại của bạn."
-                : "Đã lấy tọa độ hiện tại của bạn.",
-              "success"
             );
-          } finally {
-            setIsLocating(false);
+        } catch (
+          firstError: any
+        ) {
+          /**
+           * Nếu user từ chối quyền thì không gọi lại,
+           * tránh Safari hiện lỗi lặp.
+           */
+          if (
+            Number(
+              firstError?.code
+            ) === 1
+          ) {
+            throw firstError;
           }
-        },
 
-        (error) => {
-          setIsLocating(false);
+          /**
+           * ------------------------------------------------
+           * LẦN 2: fallback Wi-Fi/network
+           *
+           * Hữu ích cho Safari macOS và các thiết bị
+           * không trả GPS high accuracy ổn định.
+           * ------------------------------------------------
+           */
+          position =
+            await getBrowserPosition(
+              {
+                enableHighAccuracy:
+                  false,
+                timeout:
+                  30_000,
+                maximumAge:
+                  5 * 60_000,
+              }
+            );
+        }
 
-          console.warn(
-            "❌ Không lấy được vị trí:",
-            error
+        const lat =
+          Number(
+            position.coords
+              .latitude
           );
 
-          if (
-            error.code ===
-            error.PERMISSION_DENIED
-          ) {
-            showToast(
-              "Cần quyền vị trí",
-              "Hãy cho phép Anvami sử dụng vị trí để tự động xác định địa chỉ giao hàng.",
-              "warning"
-            );
+        const lng =
+          Number(
+            position.coords
+              .longitude
+          );
 
-            return;
-          }
+        if (
+          !Number.isFinite(
+            lat
+          ) ||
+          !Number.isFinite(
+            lng
+          )
+        ) {
+          throw new Error(
+            "INVALID_COORDINATES"
+          );
+        }
 
-          if (
-            error.code ===
-            error.POSITION_UNAVAILABLE
-          ) {
-            showToast(
-              "Không xác định được vị trí",
-              "Thiết bị hiện không cung cấp được vị trí. Bạn có thể nhập địa chỉ thủ công.",
-              "warning"
-            );
+        const detectedAddress =
+          await reverseGeocodeLocation(
+            lat,
+            lng
+          );
 
-            return;
-          }
+        const address =
+          detectedAddress ||
+          "Vị trí hiện tại";
 
-          if (
-            error.code ===
-            error.TIMEOUT
-          ) {
-            showToast(
-              "Định vị mất quá lâu",
-              "Bạn có thể thử lại hoặc nhập địa chỉ thủ công.",
-              "warning"
-            );
+        /**
+         * Giữ nguyên tọa độ GPS chính xác,
+         * không để effect geocode lại từ text.
+         */
+        autoLocatedAddressRef.current =
+          address;
 
-            return;
-          }
+        setUserInfo((prev) => ({
+          ...prev,
+          address,
+          lat,
+          lng,
+        }));
 
+        await persistUserLocation(
+          address,
+          lat,
+          lng
+        );
+
+        showToast(
+          "Đã cập nhật vị trí 📍",
+          detectedAddress
+            ? "Địa chỉ giao hàng đã được cập nhật."
+            : "Đã lấy được tọa độ hiện tại của bạn.",
+          "success"
+        );
+      } catch (
+        error: any
+      ) {
+        console.warn(
+          "❌ Không lấy được vị trí:",
+          error
+        );
+
+        const code =
+          Number(
+            error?.code
+          );
+
+        if (
+          code === 1
+        ) {
           showToast(
-            "Không lấy được vị trí",
-            "Bạn có thể nhập địa chỉ giao hàng thủ công.",
+            "Safari đang chặn vị trí",
+            "Hãy bật quyền Vị trí cho anvami.com trong Safari rồi nhấn biểu tượng 📍 thử lại.",
             "warning"
           );
-        },
 
-        {
-          enableHighAccuracy: true,
-          timeout: 12000,
-          maximumAge: 60_000,
+          return;
         }
-      );
+
+        if (
+          code === 2
+        ) {
+          showToast(
+            "Không xác định được vị trí",
+            "Thiết bị chưa cung cấp được vị trí. Hãy bật Dịch vụ định vị rồi thử lại.",
+            "warning"
+          );
+
+          return;
+        }
+
+        if (
+          code === 3
+        ) {
+          showToast(
+            "Định vị mất quá lâu",
+            "Không lấy được vị trí trong thời gian cho phép. Hãy kiểm tra GPS hoặc Wi-Fi rồi thử lại.",
+            "warning"
+          );
+
+          return;
+        }
+
+        showToast(
+          "Không lấy được vị trí",
+          "Hãy kiểm tra quyền vị trí của trình duyệt hoặc nhập địa chỉ thủ công.",
+          "warning"
+        );
+      } finally {
+        setIsLocating(
+          false
+        );
+      }
     }, [
+      getBrowserPosition,
+      persistUserLocation,
       reverseGeocodeLocation,
       showToast,
     ]);
 
   /**
    * ==========================================================
-   * AUTO LOCATION FOR GUEST USER
+   * AUTO LOCATION FALLBACK
    * ==========================================================
    *
-   * - Có user_phone: coi như đã đăng nhập, ưu tiên Firestore.
-   * - Chưa đăng nhập nhưng đã có địa chỉ/tọa độ lưu trước đó:
-   *   không tự ghi đè.
-   * - Khách mới hoàn toàn: tự xin quyền GPS.
+   * 1. Chờ đọc xong tài khoản.
+   * 2. Nếu tài khoản/localStorage đã có địa chỉ -> giữ nguyên.
+   * 3. Safari: KHÔNG tự xin GPS; yêu cầu người dùng bấm 📍.
+   * 4. Browser khác: có thể tự xin GPS cho người dùng mới.
    */
-
   useEffect(() => {
     if (
-      typeof window === "undefined"
+      typeof window ===
+        "undefined" ||
+      !isUserProfileResolved ||
+      autoLocationAttemptedRef
+        .current
     ) {
       return;
     }
 
-    const targetPhone =
-      localStorage.getItem(
-        "user_phone"
-      );
-
-    if (targetPhone) {
+    /**
+     * Nếu đã có địa chỉ tài khoản,
+     * không tự ghi đè bằng GPS.
+     *
+     * Nếu thiếu lat/lng,
+     * GEOCODE CUSTOMER bên dưới sẽ bổ sung.
+     */
+    if (
+      userInfo.address?.trim()
+    ) {
       return;
     }
 
-    const saved =
-      localStorage.getItem(
-        "user_shipping_info"
-      );
+    /**
+     * Kiểm tra lại localStorage để tránh race condition
+     * giữa các useEffect lúc mới mount.
+     */
+    try {
+      const saved =
+        localStorage.getItem(
+          "user_shipping_info"
+        );
 
-    if (saved) {
-      try {
+      if (saved) {
         const parsed =
           JSON.parse(saved);
-
-        const savedLat =
-          parsed.location
-            ?.latitude ??
-          parsed.lat;
-
-        const savedLng =
-          parsed.location
-            ?.longitude ??
-          parsed.lng;
 
         const savedAddress =
           String(
@@ -2180,37 +2801,69 @@ export default function HomePage() {
           ).trim();
 
         if (
-          savedAddress &&
-          Number.isFinite(
-            Number(savedLat)
-          ) &&
-          Number.isFinite(
-            Number(savedLng)
-          )
+          savedAddress
         ) {
           return;
         }
-      } catch {
-        // Dữ liệu cũ không hợp lệ -> tiếp tục xin GPS.
       }
+    } catch {
+      // Dữ liệu local cũ lỗi -> tiếp tục.
+    }
+
+    const ua =
+      navigator.userAgent;
+
+    const isSafari =
+      /Safari/i.test(ua) &&
+      !/Chrome|CriOS|Edg|OPR|Android/i.test(
+        ua
+      );
+
+    autoLocationAttemptedRef.current =
+      true;
+
+    if (isSafari) {
+      /**
+       * Safari đáng tin cậy nhất khi request GPS
+       * bắt đầu trực tiếp từ thao tác người dùng.
+       */
+      showToast(
+        "Cập nhật vị trí",
+        "Nhấn biểu tượng 📍 bên cạnh địa chỉ để Safari cho phép Anvami sử dụng vị trí.",
+        "info"
+      );
+
+      return;
     }
 
     void detectCurrentLocation();
-  }, [detectCurrentLocation]);
+  }, [
+    detectCurrentLocation,
+    isUserProfileResolved,
+    showToast,
+    userInfo.address,
+  ]);
 
   /**
    * ==========================================================
    * GEOCODE CUSTOMER
    * ==========================================================
+   *
+   * Chỉ geocode khi:
+   *
+   * - có địa chỉ
+   * - chưa có tọa độ hợp lệ
+   *
+   * Khi người dùng gõ địa chỉ mới, onChange phía dưới
+   * sẽ reset lat/lng về null để effect này chạy lại.
    */
-
   useEffect(() => {
     const address =
       userInfo.address?.trim();
 
     /**
-     * Nếu address vừa được tạo từ GPS, giữ nguyên
-     * tọa độ GPS chính xác thay vì geocode lại.
+     * Nếu address vừa được tạo từ GPS,
+     * giữ nguyên tọa độ GPS chính xác.
      */
     if (
       address &&
@@ -2230,6 +2883,20 @@ export default function HomePage() {
       return;
     }
 
+    const hasValidCoordinates =
+      Number.isFinite(
+        Number(userInfo.lat)
+      ) &&
+      Number.isFinite(
+        Number(userInfo.lng)
+      );
+
+    if (
+      hasValidCoordinates
+    ) {
+      return;
+    }
+
     const timer =
       window.setTimeout(
         async () => {
@@ -2243,22 +2910,21 @@ export default function HomePage() {
           }
 
           setUserInfo(
-            (prev) => {
-              if (
-                prev.lat ===
-                coords.lat &&
-                prev.lng ===
-                coords.lng
-              ) {
-                return prev;
-              }
+            (prev) => ({
+              ...prev,
+              lat: coords.lat,
+              lng: coords.lng,
+            })
+          );
 
-              return {
-                ...prev,
-                lat: coords.lat,
-                lng: coords.lng,
-              };
-            }
+          /**
+           * Đồng bộ địa chỉ nhập tay lên localStorage
+           * và Firestore account nếu user đã đăng nhập.
+           */
+          await persistUserLocation(
+            address,
+            coords.lat,
+            coords.lng
           );
         },
         800
@@ -2270,7 +2936,10 @@ export default function HomePage() {
       );
   }, [
     userInfo.address,
+    userInfo.lat,
+    userInfo.lng,
     geocodeAddress,
+    persistUserLocation,
   ]);
 
   /**
@@ -4414,6 +5083,13 @@ export default function HomePage() {
                           event
                             .target
                             .value,
+
+                        /**
+                         * Địa chỉ đã thay đổi -> tọa độ cũ
+                         * không còn hợp lệ.
+                         */
+                        lat: null,
+                        lng: null,
                       })
                     );
                   }}
