@@ -1243,12 +1243,16 @@ export default function HomePage() {
     setUserInfo,
   ] = useState<UserLocation>({
     customerName: "Khách Hàng",
-    customerPhone: "0987654321",
-    address:
-      "45 Phan Đình Phùng, TP Hà Tĩnh",
-    lat: 18.3445,
-    lng: 105.8978,
+    customerPhone: "",
+    address: "",
+    lat: null,
+    lng: null,
   });
+
+  const [
+    isLocating,
+    setIsLocating,
+  ] = useState(false);
 
   const [
     timeLeft,
@@ -1260,6 +1264,13 @@ export default function HomePage() {
 
   const searchRef =
     useRef<HTMLDivElement>(null);
+
+  /**
+   * Khi địa chỉ vừa được tạo từ GPS, giữ nguyên tọa độ GPS
+   * thay vì geocode lại từ chuỗi địa chỉ.
+   */
+  const autoLocatedAddressRef =
+    useRef("");
 
   /**
    * ==========================================================
@@ -1870,6 +1881,325 @@ export default function HomePage() {
 
   /**
    * ==========================================================
+   * REVERSE GEOCODE CURRENT LOCATION
+   * lat/lng -> địa chỉ
+   * ==========================================================
+   */
+
+  const reverseGeocodeLocation =
+    useCallback(
+      async (
+        lat: number,
+        lng: number
+      ): Promise<string | null> => {
+        try {
+          const response =
+            await fetch(
+              `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(
+                lat
+              )}&lon=${encodeURIComponent(
+                lng
+              )}&zoom=18&addressdetails=1&accept-language=vi`
+            );
+
+          if (!response.ok) {
+            return null;
+          }
+
+          const data =
+            await response.json();
+
+          if (
+            typeof data?.display_name ===
+              "string" &&
+            data.display_name.trim()
+          ) {
+            return data.display_name.trim();
+          }
+
+          const address =
+            data?.address;
+
+          if (!address) {
+            return null;
+          }
+
+          const parts = [
+            address.house_number,
+            address.road,
+            address.suburb ||
+              address.neighbourhood ||
+              address.village,
+            address.city ||
+              address.town ||
+              address.county,
+            address.state,
+          ].filter(Boolean);
+
+          return parts.length > 0
+            ? parts.join(", ")
+            : null;
+        } catch (error) {
+          console.warn(
+            "❌ Reverse geocode thất bại:",
+            error
+          );
+
+          return null;
+        }
+      },
+      []
+    );
+
+  /**
+   * ==========================================================
+   * DETECT CURRENT LOCATION
+   * ==========================================================
+   */
+
+  const detectCurrentLocation =
+    useCallback(async () => {
+      if (
+        typeof window === "undefined" ||
+        !navigator.geolocation
+      ) {
+        showToast(
+          "Không hỗ trợ vị trí",
+          "Trình duyệt của bạn không hỗ trợ định vị.",
+          "warning"
+        );
+
+        return;
+      }
+
+      setIsLocating(true);
+
+      navigator.geolocation.getCurrentPosition(
+        async (position) => {
+          try {
+            const lat =
+              position.coords.latitude;
+
+            const lng =
+              position.coords.longitude;
+
+            const detectedAddress =
+              await reverseGeocodeLocation(
+                lat,
+                lng
+              );
+
+            const address =
+              detectedAddress ||
+              "Vị trí hiện tại";
+
+            /**
+             * Đánh dấu để effect geocode bên dưới
+             * không thay tọa độ GPS bằng tọa độ geocode
+             * từ chuỗi địa chỉ.
+             */
+            autoLocatedAddressRef.current =
+              address;
+
+            setUserInfo((prev) => ({
+              ...prev,
+              address,
+              lat,
+              lng,
+            }));
+
+            /**
+             * Lưu lại vị trí cho lần truy cập tiếp theo.
+             */
+            try {
+              const previousRaw =
+                localStorage.getItem(
+                  "user_shipping_info"
+                );
+
+              let previous: any = {};
+
+              if (previousRaw) {
+                try {
+                  previous =
+                    JSON.parse(previousRaw);
+                } catch {
+                  previous = {};
+                }
+              }
+
+              localStorage.setItem(
+                "user_shipping_info",
+                JSON.stringify({
+                  ...previous,
+                  address,
+                  lat,
+                  lng,
+                  location: {
+                    ...(previous.location ||
+                      {}),
+                    latitude: lat,
+                    longitude: lng,
+                  },
+                })
+              );
+            } catch (error) {
+              console.warn(
+                "Không thể lưu vị trí:",
+                error
+              );
+            }
+
+            showToast(
+              "Đã xác định vị trí 📍",
+              detectedAddress
+                ? "Đã cập nhật địa chỉ hiện tại của bạn."
+                : "Đã lấy tọa độ hiện tại của bạn.",
+              "success"
+            );
+          } finally {
+            setIsLocating(false);
+          }
+        },
+
+        (error) => {
+          setIsLocating(false);
+
+          console.warn(
+            "❌ Không lấy được vị trí:",
+            error
+          );
+
+          if (
+            error.code ===
+            error.PERMISSION_DENIED
+          ) {
+            showToast(
+              "Cần quyền vị trí",
+              "Hãy cho phép Anvami sử dụng vị trí để tự động xác định địa chỉ giao hàng.",
+              "warning"
+            );
+
+            return;
+          }
+
+          if (
+            error.code ===
+            error.POSITION_UNAVAILABLE
+          ) {
+            showToast(
+              "Không xác định được vị trí",
+              "Thiết bị hiện không cung cấp được vị trí. Bạn có thể nhập địa chỉ thủ công.",
+              "warning"
+            );
+
+            return;
+          }
+
+          if (
+            error.code ===
+            error.TIMEOUT
+          ) {
+            showToast(
+              "Định vị mất quá lâu",
+              "Bạn có thể thử lại hoặc nhập địa chỉ thủ công.",
+              "warning"
+            );
+
+            return;
+          }
+
+          showToast(
+            "Không lấy được vị trí",
+            "Bạn có thể nhập địa chỉ giao hàng thủ công.",
+            "warning"
+          );
+        },
+
+        {
+          enableHighAccuracy: true,
+          timeout: 12000,
+          maximumAge: 60_000,
+        }
+      );
+    }, [
+      reverseGeocodeLocation,
+      showToast,
+    ]);
+
+  /**
+   * ==========================================================
+   * AUTO LOCATION FOR GUEST USER
+   * ==========================================================
+   *
+   * - Có user_phone: coi như đã đăng nhập, ưu tiên Firestore.
+   * - Chưa đăng nhập nhưng đã có địa chỉ/tọa độ lưu trước đó:
+   *   không tự ghi đè.
+   * - Khách mới hoàn toàn: tự xin quyền GPS.
+   */
+
+  useEffect(() => {
+    if (
+      typeof window === "undefined"
+    ) {
+      return;
+    }
+
+    const targetPhone =
+      localStorage.getItem(
+        "user_phone"
+      );
+
+    if (targetPhone) {
+      return;
+    }
+
+    const saved =
+      localStorage.getItem(
+        "user_shipping_info"
+      );
+
+    if (saved) {
+      try {
+        const parsed =
+          JSON.parse(saved);
+
+        const savedLat =
+          parsed.location
+            ?.latitude ??
+          parsed.lat;
+
+        const savedLng =
+          parsed.location
+            ?.longitude ??
+          parsed.lng;
+
+        const savedAddress =
+          String(
+            parsed.address || ""
+          ).trim();
+
+        if (
+          savedAddress &&
+          Number.isFinite(
+            Number(savedLat)
+          ) &&
+          Number.isFinite(
+            Number(savedLng)
+          )
+        ) {
+          return;
+        }
+      } catch {
+        // Dữ liệu cũ không hợp lệ -> tiếp tục xin GPS.
+      }
+    }
+
+    void detectCurrentLocation();
+  }, [detectCurrentLocation]);
+
+  /**
+   * ==========================================================
    * GEOCODE CUSTOMER
    * ==========================================================
    */
@@ -1877,6 +2207,21 @@ export default function HomePage() {
   useEffect(() => {
     const address =
       userInfo.address?.trim();
+
+    /**
+     * Nếu address vừa được tạo từ GPS, giữ nguyên
+     * tọa độ GPS chính xác thay vì geocode lại.
+     */
+    if (
+      address &&
+      autoLocatedAddressRef.current ===
+        address
+    ) {
+      autoLocatedAddressRef.current =
+        "";
+
+      return;
+    }
 
     if (
       !address ||
@@ -4046,25 +4391,56 @@ export default function HomePage() {
                 - Giao tới:
               </span>
 
-              <input
-                type="text"
-                value={
-                  userInfo.address
-                }
-                onChange={(event) =>
-                  setUserInfo(
-                    (prev) => ({
-                      ...prev,
-                      address:
-                        event
-                          .target
-                          .value,
-                    })
-                  )
-                }
-                placeholder="Nhập địa chỉ của bạn..."
-                className="bg-transparent text-white font-bold text-xs focus:outline-none w-full truncate placeholder:text-white/70"
-              />
+              <div className="flex items-center gap-1.5">
+
+                <input
+                  type="text"
+                  value={
+                    userInfo.address
+                  }
+                  onChange={(event) => {
+                    /**
+                     * Người dùng đang nhập địa chỉ thủ công,
+                     * bỏ cờ địa chỉ lấy từ GPS để effect
+                     * geocode có thể tính lại tọa độ.
+                     */
+                    autoLocatedAddressRef.current =
+                      "";
+
+                    setUserInfo(
+                      (prev) => ({
+                        ...prev,
+                        address:
+                          event
+                            .target
+                            .value,
+                      })
+                    );
+                  }}
+                  placeholder={
+                    isLocating
+                      ? "Đang xác định vị trí..."
+                      : "Nhập địa chỉ của bạn..."
+                  }
+                  className="bg-transparent text-white font-bold text-xs focus:outline-none min-w-0 flex-1 truncate placeholder:text-white/70"
+                />
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    void detectCurrentLocation()
+                  }
+                  disabled={isLocating}
+                  title="Sử dụng vị trí hiện tại"
+                  aria-label="Sử dụng vị trí hiện tại"
+                  className="shrink-0 w-7 h-7 flex items-center justify-center rounded-full bg-white/15 hover:bg-white/25 transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  {isLocating
+                    ? "⏳"
+                    : "📍"}
+                </button>
+
+              </div>
 
             </div>
           </div>
