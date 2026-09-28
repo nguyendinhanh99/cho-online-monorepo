@@ -262,6 +262,33 @@ interface ProductView extends Product {
  * ============================================================
  */
 
+const PRODUCT_RENDER_BATCH = 30;
+const FLASH_RENDER_LIMIT = 12;
+
+/**
+ * Chuẩn hóa chuỗi địa chỉ để kiểm tra khu vực phục vụ.
+ * "Hà Tĩnh" -> "ha tinh"
+ */
+const normalizeRegionText = (
+  value: unknown
+): string => {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "D")
+    .toLowerCase()
+    .trim();
+};
+
+const isHaTinhAddress = (
+  value: unknown
+): boolean => {
+  return normalizeRegionText(
+    value
+  ).includes("ha tinh");
+};
+
 const HOT_KEYWORDS = [
   "Cơm tấm",
   "Trà sữa",
@@ -1260,6 +1287,35 @@ export default function HomePage() {
   ] = useState(false);
 
   /**
+   * Khu vực phục vụ hiện tại.
+   *
+   * unknown     = chưa đủ dữ liệu để kết luận
+   * checking    = đang xác minh tỉnh/thành từ tọa độ
+   * supported   = Hà Tĩnh
+   * unsupported = ngoài Hà Tĩnh
+   */
+  const [
+    serviceAreaStatus,
+    setServiceAreaStatus,
+  ] = useState<
+    | "unknown"
+    | "checking"
+    | "supported"
+    | "unsupported"
+  >("unknown");
+
+  const [
+    visibleProductCount,
+    setVisibleProductCount,
+  ] = useState(
+    PRODUCT_RENDER_BATCH
+  );
+
+  const isOutsideServiceArea =
+    serviceAreaStatus ===
+    "unsupported";
+
+  /**
    * Chỉ bật fallback GPS sau khi đã thử đọc hồ sơ tài khoản.
    * Điều này tránh GPS ghi đè địa chỉ đã lưu của người dùng.
    */
@@ -1298,6 +1354,13 @@ export default function HomePage() {
    */
   const autoLocationAttemptedRef =
     useRef(false);
+
+  /**
+   * Tránh reverse-geocode lặp lại cùng một tọa độ
+   * chỉ để kiểm tra khu vực phục vụ.
+   */
+  const serviceAreaCheckedKeyRef =
+    useRef("");
 
   /**
    * ==========================================================
@@ -2884,6 +2947,10 @@ export default function HomePage() {
     }
 
     const hasValidCoordinates =
+      userInfo.lat !== null &&
+      userInfo.lat !== undefined &&
+      userInfo.lng !== null &&
+      userInfo.lng !== undefined &&
       Number.isFinite(
         Number(userInfo.lat)
       ) &&
@@ -2940,6 +3007,149 @@ export default function HomePage() {
     userInfo.lng,
     geocodeAddress,
     persistUserLocation,
+  ]);
+
+  /**
+   * ==========================================================
+   * SERVICE AREA - HÀ TĨNH
+   * ==========================================================
+   *
+   * Ưu tiên:
+   * 1. Nếu địa chỉ đã chứa "Hà Tĩnh" -> hỗ trợ ngay.
+   * 2. Nếu có tọa độ nhưng chuỗi địa chỉ chưa rõ tỉnh ->
+   *    reverse-geocode để xác minh.
+   * 3. Nếu không xác minh được -> giữ trạng thái unknown,
+   *    không chặn nhầm khách hàng.
+   */
+  useEffect(() => {
+    let cancelled = false;
+
+    const address =
+      userInfo.address?.trim() ||
+      "";
+
+    if (
+      isHaTinhAddress(
+        address
+      )
+    ) {
+      serviceAreaCheckedKeyRef.current =
+        "";
+
+      setServiceAreaStatus(
+        "supported"
+      );
+
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const lat =
+      userInfo.lat;
+
+    const lng =
+      userInfo.lng;
+
+    const hasCoordinates =
+      lat !== null &&
+      lat !== undefined &&
+      lng !== null &&
+      lng !== undefined &&
+      Number.isFinite(
+        Number(lat)
+      ) &&
+      Number.isFinite(
+        Number(lng)
+      );
+
+    if (!hasCoordinates) {
+      serviceAreaCheckedKeyRef.current =
+        "";
+
+      setServiceAreaStatus(
+        "unknown"
+      );
+
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const normalizedLat =
+      Number(lat);
+
+    const normalizedLng =
+      Number(lng);
+
+    const coordinateKey =
+      `${normalizedLat.toFixed(
+        5
+      )},${normalizedLng.toFixed(
+        5
+      )}`;
+
+    if (
+      serviceAreaCheckedKeyRef
+        .current ===
+      coordinateKey
+    ) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const checkServiceArea =
+      async () => {
+        setServiceAreaStatus(
+          "checking"
+        );
+
+        const resolvedAddress =
+          await reverseGeocodeLocation(
+            normalizedLat,
+            normalizedLng
+          );
+
+        if (cancelled) {
+          return;
+        }
+
+        if (
+          resolvedAddress
+        ) {
+          serviceAreaCheckedKeyRef.current =
+            coordinateKey;
+
+          setServiceAreaStatus(
+            isHaTinhAddress(
+              resolvedAddress
+            )
+              ? "supported"
+              : "unsupported"
+          );
+
+          return;
+        }
+
+        /**
+         * Không xác minh được thì không chặn khách hàng.
+         */
+        setServiceAreaStatus(
+          "unknown"
+        );
+      };
+
+    void checkServiceArea();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    userInfo.address,
+    userInfo.lat,
+    userInfo.lng,
+    reverseGeocodeLocation,
   ]);
 
   /**
@@ -4715,6 +4925,68 @@ export default function HomePage() {
 
   /**
    * ==========================================================
+   * PROGRESSIVE PRODUCT RENDER
+   * ==========================================================
+   *
+   * Dữ liệu và toàn bộ logic tìm kiếm/ranking/voucher vẫn giữ nguyên.
+   * Chỉ giới hạn số card React dựng vào DOM:
+   *
+   * 30 -> 60 -> 90 -> ...
+   *
+   * Điều này giúp trang ổn định hơn khi có khoảng 1.000 sản phẩm,
+   * đặc biệt trên Safari/iPhone và điện thoại RAM thấp.
+   */
+  const displayedProducts =
+    useMemo(() => {
+      return filteredProducts.slice(
+        0,
+        visibleProductCount
+      );
+    }, [
+      filteredProducts,
+      visibleProductCount,
+    ]);
+
+  const remainingProducts =
+    Math.max(
+      0,
+      filteredProducts.length -
+        visibleProductCount
+    );
+
+  const hasMoreProducts =
+    remainingProducts > 0;
+
+  const handleLoadMoreProducts =
+    useCallback(() => {
+      setVisibleProductCount(
+        (current) =>
+          Math.min(
+            current +
+              PRODUCT_RENDER_BATCH,
+            filteredProducts.length
+          )
+      );
+    }, [
+      filteredProducts.length,
+    ]);
+
+  /**
+   * Đổi tìm kiếm / danh mục / bộ lọc:
+   * quay lại batch đầu để tránh giữ hàng trăm card trong DOM.
+   */
+  useEffect(() => {
+    setVisibleProductCount(
+      PRODUCT_RENDER_BATCH
+    );
+  }, [
+    searchQuery,
+    activeTab,
+    quickFilter,
+  ]);
+
+  /**
+   * ==========================================================
    * SHOP HELPERS
    * ==========================================================
    */
@@ -4762,6 +5034,18 @@ export default function HomePage() {
   const handleAddToCart =
     useCallback(
       (product: Product) => {
+        if (
+          isOutsideServiceArea
+        ) {
+          showToast(
+            "Khu vực chưa được hỗ trợ",
+            "Xin lỗi, hiện tại Anvami chưa hỗ trợ khu vực của bạn.",
+            "warning"
+          );
+
+          return;
+        }
+
         const shop =
           shops[
           product.shopId
@@ -4802,6 +5086,7 @@ export default function HomePage() {
         getShopDistance,
         addItemToCart,
         showToast,
+        isOutsideServiceArea,
       ]
     );
 
@@ -4811,6 +5096,18 @@ export default function HomePage() {
         product: any,
         quantity: number
       ) => {
+        if (
+          isOutsideServiceArea
+        ) {
+          showToast(
+            "Khu vực chưa được hỗ trợ",
+            "Xin lỗi, hiện tại Anvami chưa hỗ trợ khu vực của bạn.",
+            "warning"
+          );
+
+          return;
+        }
+
         const realProduct =
           product as Product;
 
@@ -4851,6 +5148,7 @@ export default function HomePage() {
         getShopDistance,
         addItemToCart,
         showToast,
+        isOutsideServiceArea,
       ]
     );
 
@@ -5328,6 +5626,34 @@ export default function HomePage() {
 
         </div>
       </div>
+
+      {/* ======================================================
+          SERVICE AREA NOTICE
+          ====================================================== */}
+
+      {isOutsideServiceArea && (
+        <div className="mx-3 mt-3 mb-2 rounded-2xl border border-orange-200 bg-gradient-to-br from-orange-50 via-white to-amber-50 p-4 shadow-sm">
+          <div className="flex items-start gap-3">
+
+            <div className="w-10 h-10 rounded-full bg-orange-100 flex items-center justify-center text-xl shrink-0">
+              📍
+            </div>
+
+            <div className="min-w-0 flex-1">
+
+              <h3 className="text-sm font-black text-stone-900">
+                Xin lỗi, hiện tại Anvami chưa hỗ trợ khu vực của bạn.
+              </h3>
+
+              <p className="text-[11px] text-stone-500 leading-relaxed mt-1">
+                Anvami hiện đang phục vụ tại Hà Tĩnh. Bạn có thể nhập lại địa chỉ giao hàng hoặc nhấn biểu tượng 📍 để kiểm tra vị trí hiện tại.
+              </p>
+
+            </div>
+
+          </div>
+        </div>
+      )}
 
       {/* ======================================================
           VOUCHERS
@@ -5995,7 +6321,12 @@ export default function HomePage() {
                 "active"
                 ? activeDeals
                 : upcomingDeals
-              ).map(
+              )
+                .slice(
+                  0,
+                  FLASH_RENDER_LIMIT
+                )
+                .map(
                 (item) => {
                   const shop =
                     shops[
@@ -6179,7 +6510,8 @@ export default function HomePage() {
                               <button
                                 type="button"
                                 disabled={
-                                  !isShopOpen
+                                  !isShopOpen ||
+                                  isOutsideServiceArea
                                 }
                                 onClick={(
                                   event
@@ -6190,9 +6522,15 @@ export default function HomePage() {
                                     item
                                   );
                                 }}
-                                className="w-full bg-[#ee4d2d] hover:bg-[#d73f20] text-white text-[10px] font-bold py-1 rounded-lg transition active:scale-95"
+                                className={`w-full text-white text-[10px] font-bold py-1 rounded-lg transition active:scale-95 ${isShopOpen &&
+                                  !isOutsideServiceArea
+                                  ? "bg-[#ee4d2d] hover:bg-[#d73f20]"
+                                  : "bg-stone-300 text-stone-500 cursor-not-allowed"
+                                  }`}
                               >
-                                + Thêm món
+                                {isOutsideServiceArea
+                                  ? "Ngoài khu vực"
+                                  : "+ Thêm món"}
                               </button>
 
                             </div>
@@ -6383,7 +6721,7 @@ export default function HomePage() {
 
         <div className="p-2 grid grid-cols-2 gap-2">
 
-          {filteredProducts.map(
+          {displayedProducts.map(
             (product) => {
               const shop =
                 shops[
@@ -6676,7 +7014,8 @@ export default function HomePage() {
                       <button
                         type="button"
                         disabled={
-                          !isShopOpen
+                          !isShopOpen ||
+                          isOutsideServiceArea
                         }
                         onClick={(
                           event
@@ -6687,15 +7026,18 @@ export default function HomePage() {
                             product
                           );
                         }}
-                        className={`${isShopOpen
+                        className={`${isShopOpen &&
+                          !isOutsideServiceArea
                           ? "bg-[#ee4d2d] hover:bg-[#d73f20]"
                           : "bg-stone-300 text-stone-500 cursor-not-allowed"
                           } active:scale-95 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg transition shadow-2xs flex items-center gap-0.5 shrink-0 ml-1`}
                       >
                         {
-                          isShopOpen
-                            ? "+ Thêm"
-                            : "Tạm đóng"
+                          isOutsideServiceArea
+                            ? "Ngoài khu vực"
+                            : isShopOpen
+                              ? "+ Thêm"
+                              : "Tạm đóng"
                         }
                       </button>
 
@@ -6710,6 +7052,29 @@ export default function HomePage() {
 
         </div>
       )}
+
+      {!loading &&
+        filteredProducts.length >
+          0 &&
+        hasMoreProducts && (
+          <div className="px-3 pt-2 pb-6">
+
+            <button
+              type="button"
+              onClick={
+                handleLoadMoreProducts
+              }
+              className="w-full py-3.5 rounded-2xl bg-white border border-stone-200 text-stone-700 text-xs font-bold shadow-sm hover:bg-stone-50 active:scale-[0.99] transition cursor-pointer"
+            >
+              Xem thêm sản phẩm
+
+              <span className="ml-1.5 text-stone-400 font-semibold">
+                ({remainingProducts})
+              </span>
+            </button>
+
+          </div>
+        )}
 
       {/* ======================================================
           PRODUCT MODAL
