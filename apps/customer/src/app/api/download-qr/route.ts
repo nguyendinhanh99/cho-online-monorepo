@@ -100,7 +100,7 @@ export async function GET(
     }
 
     /* =====================================================
-       DOWNLOAD IMAGE
+       GET QR IMAGE
     ===================================================== */
 
     const response =
@@ -122,11 +122,18 @@ export async function GET(
     const image =
       await response.arrayBuffer();
 
-    const contentType =
+    const upstreamContentType =
       response.headers.get(
         "content-type"
-      ) ||
-      "image/png";
+      );
+
+    const contentType =
+      upstreamContentType &&
+      upstreamContentType.startsWith(
+        "image/"
+      )
+        ? upstreamContentType
+        : "image/png";
 
     /* =====================================================
        SAFE FILE NAME
@@ -147,11 +154,20 @@ export async function GET(
           "Content-Type":
             contentType,
 
+          /**
+           * inline:
+           * - Safari có thể xử lý response như ảnh
+           * - page.tsx sẽ fetch blob rồi mở Share Sheet
+           * - không ép iOS vào luồng "Lưu vào Files"
+           */
           "Content-Disposition":
-            `attachment; filename="Anvami-VietQR-${safeCode}.png"`,
+            `inline; filename="Anvami-VietQR-${safeCode}.png"`,
 
           "Cache-Control":
             "no-store, no-cache, must-revalidate",
+
+          "X-Content-Type-Options":
+            "nosniff",
         },
       }
     );
