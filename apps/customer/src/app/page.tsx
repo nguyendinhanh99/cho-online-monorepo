@@ -216,6 +216,13 @@ interface ToastMessage {
   message: string;
 }
 
+interface SearchHistoryEntry {
+  keyword: string;
+  normalized: string;
+  count: number;
+  lastSearchedAt: number;
+}
+
 interface PromotionInfo {
   originalPrice: number;
   currentPrice: number;
@@ -264,6 +271,158 @@ interface ProductView extends Product {
 
 const PRODUCT_RENDER_BATCH = 30;
 const FLASH_RENDER_LIMIT = 12;
+
+const SEARCH_HISTORY_DISPLAY_LIMIT = 8;
+const SEARCH_PROFILE_LIMIT = 20;
+const PERSONALIZED_PRODUCT_LIMIT = 8;
+const SEARCH_PROFILE_STORAGE_KEY =
+  "search_profile_fnb_v1";
+
+/**
+ * Chuẩn hóa từ khóa tìm kiếm để:
+ * - bỏ khác biệt hoa/thường
+ * - bỏ dấu tiếng Việt
+ * - bỏ emoji/ký tự thừa
+ * - so khớp sở thích ổn định hơn
+ */
+const normalizeSearchText = (
+  value: unknown
+): string => {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "D")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+};
+
+const sanitizeSearchEntries = (
+  value: unknown
+): SearchHistoryEntry[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item: any) => {
+      const keyword =
+        String(item?.keyword ?? "").trim();
+
+      const normalized =
+        normalizeSearchText(
+          item?.normalized || keyword
+        );
+
+      const count = Math.max(
+        1,
+        Number(item?.count || 1)
+      );
+
+      const lastSearchedAt =
+        Number(item?.lastSearchedAt) ||
+        Date.now();
+
+      if (!keyword || !normalized) {
+        return null;
+      }
+
+      return {
+        keyword,
+        normalized,
+        count,
+        lastSearchedAt,
+      };
+    })
+    .filter(
+      (
+        item
+      ): item is SearchHistoryEntry =>
+        item !== null
+    )
+    .sort(
+      (a, b) =>
+        b.lastSearchedAt -
+        a.lastSearchedAt
+    )
+    .slice(
+      0,
+      SEARCH_PROFILE_LIMIT
+    );
+};
+
+const mergeSearchEntries = (
+  ...groups: SearchHistoryEntry[][]
+): SearchHistoryEntry[] => {
+  const merged =
+    new Map<
+      string,
+      SearchHistoryEntry
+    >();
+
+  groups
+    .flat()
+    .forEach((entry) => {
+      if (
+        !entry?.keyword ||
+        !entry?.normalized
+      ) {
+        return;
+      }
+
+      const current =
+        merged.get(
+          entry.normalized
+        );
+
+      if (!current) {
+        merged.set(
+          entry.normalized,
+          entry
+        );
+        return;
+      }
+
+      const latest =
+        entry.lastSearchedAt >=
+          current.lastSearchedAt
+          ? entry
+          : current;
+
+      merged.set(
+        entry.normalized,
+        {
+          keyword: latest.keyword,
+          normalized:
+            entry.normalized,
+          count: Math.max(
+            current.count,
+            entry.count
+          ),
+          lastSearchedAt:
+            Math.max(
+              current.lastSearchedAt,
+              entry.lastSearchedAt
+            ),
+        }
+      );
+    });
+
+  return Array.from(
+    merged.values()
+  )
+    .sort(
+      (a, b) =>
+        b.lastSearchedAt -
+        a.lastSearchedAt
+    )
+    .slice(
+      0,
+      SEARCH_PROFILE_LIMIT
+    );
+};
 
 /**
  * Chuẩn hóa chuỗi địa chỉ để kiểm tra khu vực phục vụ.
@@ -1238,6 +1397,24 @@ export default function HomePage() {
     setSearchHistory,
   ] = useState<string[]>([]);
 
+  /**
+   * Lịch sử có trọng số dùng cho cá nhân hóa.
+   * Khác searchHistory (chỉ phục vụ UI), searchSignals còn lưu:
+   * - số lần tìm
+   * - lần tìm gần nhất
+   */
+  const [
+    searchSignals,
+    setSearchSignals,
+  ] = useState<SearchHistoryEntry[]>(
+    []
+  );
+
+  const searchSignalsRef =
+    useRef<SearchHistoryEntry[]>(
+      []
+    );
+
   const [
     shopCoordinates,
     setShopCoordinates,
@@ -1501,6 +1678,9 @@ export default function HomePage() {
     setIsMounted(true);
 
     try {
+      let legacyHistory:
+        string[] = [];
+
       const savedHistory =
         localStorage.getItem(
           "search_history_fnb"
@@ -1515,11 +1695,93 @@ export default function HomePage() {
         if (
           Array.isArray(parsed)
         ) {
-          setSearchHistory(
+          legacyHistory =
             parsed
+              .filter(
+                (
+                  item
+                ): item is string =>
+                  typeof item ===
+                  "string" &&
+                  item.trim()
+                    .length > 0
+              )
+              .slice(
+                0,
+                SEARCH_HISTORY_DISPLAY_LIMIT
+              );
+
+          setSearchHistory(
+            legacyHistory
           );
         }
       }
+
+      const savedProfile =
+        localStorage.getItem(
+          SEARCH_PROFILE_STORAGE_KEY
+        );
+
+      let localSignals:
+        SearchHistoryEntry[] = [];
+
+      if (savedProfile) {
+        const parsed =
+          JSON.parse(
+            savedProfile
+          );
+
+        localSignals =
+          sanitizeSearchEntries(
+            parsed?.history ??
+            parsed
+          );
+      }
+
+      /**
+       * Tự migrate dữ liệu lịch sử cũ sang profile mới.
+       */
+      if (
+        localSignals.length ===
+          0 &&
+        legacyHistory.length >
+          0
+      ) {
+        const now = Date.now();
+
+        localSignals =
+          legacyHistory.map(
+            (
+              keyword,
+              index
+            ) => ({
+              keyword,
+              normalized:
+                normalizeSearchText(
+                  keyword
+                ),
+              count: 1,
+              lastSearchedAt:
+                now -
+                index * 1000,
+            })
+          );
+
+        localStorage.setItem(
+          SEARCH_PROFILE_STORAGE_KEY,
+          JSON.stringify({
+            history:
+              localSignals,
+          })
+        );
+      }
+
+      searchSignalsRef.current =
+        localSignals;
+
+      setSearchSignals(
+        localSignals
+      );
 
       const savedVoucherData =
         localStorage.getItem(
@@ -1690,6 +1952,70 @@ export default function HomePage() {
 
       activeUserDocIdRef.current =
         docId;
+
+      /**
+       * Đồng bộ lịch sử tìm kiếm từ tài khoản.
+       * Local + Firestore được merge theo từ khóa,
+       * tránh cộng lặp số lần khi cùng dữ liệu đã sync.
+       */
+      const remoteSignals =
+        sanitizeSearchEntries(
+          userData
+            ?.foodSearchProfile
+            ?.history
+        );
+
+      if (
+        remoteSignals.length >
+        0
+      ) {
+        const mergedSignals =
+          mergeSearchEntries(
+            searchSignalsRef.current,
+            remoteSignals
+          );
+
+        searchSignalsRef.current =
+          mergedSignals;
+
+        setSearchSignals(
+          mergedSignals
+        );
+
+        const mergedRecent =
+          mergedSignals
+            .map(
+              (item) =>
+                item.keyword
+            )
+            .slice(
+              0,
+              SEARCH_HISTORY_DISPLAY_LIMIT
+            );
+
+        setSearchHistory(
+          mergedRecent
+        );
+
+        try {
+          localStorage.setItem(
+            "search_history_fnb",
+            JSON.stringify(
+              mergedRecent
+            )
+          );
+
+          localStorage.setItem(
+            SEARCH_PROFILE_STORAGE_KEY,
+            JSON.stringify({
+              history:
+                mergedSignals,
+            })
+          );
+        } catch {
+          // Storage có thể bị chặn ở Safari Private Browsing.
+        }
+      }
 
       const location =
         userData.location &&
@@ -2123,7 +2449,7 @@ export default function HomePage() {
 
   /**
    * ==========================================================
-   * SEARCH
+   * SEARCH + PERSONALIZATION SIGNALS
    * ==========================================================
    */
 
@@ -2133,31 +2459,158 @@ export default function HomePage() {
         const trimmed =
           keyword.trim();
 
-        if (!trimmed) {
+        const normalized =
+          normalizeSearchText(
+            trimmed
+          );
+
+        if (
+          !trimmed ||
+          !normalized
+        ) {
           return;
         }
 
+        const now =
+          Date.now();
+
+        /**
+         * ----------------------------------------------------
+         * 1. Lịch sử ngắn để hiển thị trong search box
+         * ----------------------------------------------------
+         */
         setSearchHistory(
           (prev) => {
             const updated = [
               trimmed,
               ...prev.filter(
                 (item) =>
-                  item !==
-                  trimmed
+                  normalizeSearchText(
+                    item
+                  ) !==
+                  normalized
               ),
-            ].slice(0, 5);
-
-            localStorage.setItem(
-              "search_history_fnb",
-              JSON.stringify(
-                updated
-              )
+            ].slice(
+              0,
+              SEARCH_HISTORY_DISPLAY_LIMIT
             );
+
+            try {
+              localStorage.setItem(
+                "search_history_fnb",
+                JSON.stringify(
+                  updated
+                )
+              );
+            } catch {
+              // Không chặn tìm kiếm nếu storage lỗi.
+            }
 
             return updated;
           }
         );
+
+        /**
+         * ----------------------------------------------------
+         * 2. Profile tìm kiếm có trọng số
+         * ----------------------------------------------------
+         *
+         * Một từ khóa tìm nhiều lần sẽ có trọng số cao hơn.
+         */
+        const current =
+          searchSignalsRef.current;
+
+        const existing =
+          current.find(
+            (item) =>
+              item.normalized ===
+              normalized
+          );
+
+        const nextEntry:
+          SearchHistoryEntry = {
+          keyword: trimmed,
+          normalized,
+          count:
+            (existing?.count ||
+              0) + 1,
+          lastSearchedAt: now,
+        };
+
+        const updatedSignals =
+          [
+            nextEntry,
+            ...current.filter(
+              (item) =>
+                item.normalized !==
+                normalized
+            ),
+          ]
+            .sort(
+              (a, b) =>
+                b.lastSearchedAt -
+                a.lastSearchedAt
+            )
+            .slice(
+              0,
+              SEARCH_PROFILE_LIMIT
+            );
+
+        searchSignalsRef.current =
+          updatedSignals;
+
+        setSearchSignals(
+          updatedSignals
+        );
+
+        try {
+          localStorage.setItem(
+            SEARCH_PROFILE_STORAGE_KEY,
+            JSON.stringify({
+              history:
+                updatedSignals,
+            })
+          );
+        } catch {
+          // Local personalization vẫn không được phép làm hỏng search.
+        }
+
+        /**
+         * ----------------------------------------------------
+         * 3. Đồng bộ tài khoản Firestore - best effort
+         * ----------------------------------------------------
+         *
+         * Nếu user chưa đăng nhập / rules không cho update,
+         * tính năng vẫn chạy bằng localStorage.
+         */
+        const userDocId =
+          activeUserDocIdRef.current;
+
+        if (userDocId) {
+          void updateDoc(
+            doc(
+              db,
+              "users",
+              userDocId
+            ),
+            {
+              foodSearchProfile: {
+                history:
+                  updatedSignals,
+                updatedAt:
+                  new Date()
+                    .toISOString(),
+              },
+            }
+          ).catch(
+            (error) => {
+              console.warn(
+                "⚠️ Không thể đồng bộ lịch sử tìm kiếm lên tài khoản:",
+                error
+              );
+            }
+          );
+        }
       },
       []
     );
@@ -2165,10 +2618,50 @@ export default function HomePage() {
   const clearHistory =
     useCallback(() => {
       setSearchHistory([]);
+      setSearchSignals([]);
 
-      localStorage.removeItem(
-        "search_history_fnb"
-      );
+      searchSignalsRef.current =
+        [];
+
+      try {
+        localStorage.removeItem(
+          "search_history_fnb"
+        );
+
+        localStorage.removeItem(
+          SEARCH_PROFILE_STORAGE_KEY
+        );
+      } catch {
+        // Ignore storage error.
+      }
+
+      const userDocId =
+        activeUserDocIdRef.current;
+
+      if (userDocId) {
+        void updateDoc(
+          doc(
+            db,
+            "users",
+            userDocId
+          ),
+          {
+            foodSearchProfile: {
+              history: [],
+              updatedAt:
+                new Date()
+                  .toISOString(),
+            },
+          }
+        ).catch(
+          (error) => {
+            console.warn(
+              "⚠️ Không thể xóa lịch sử tìm kiếm trên tài khoản:",
+              error
+            );
+          }
+        );
+      }
     }, []);
 
   /**
@@ -4636,6 +5129,256 @@ export default function HomePage() {
 
   /**
    * ==========================================================
+   * USER FOOD INTEREST PROFILE
+   * ==========================================================
+   *
+   * Phân tích lịch sử tìm kiếm theo 3 tín hiệu:
+   *
+   * 1. Số lần tìm kiếm.
+   * 2. Độ mới của lần tìm kiếm.
+   * 3. Từ khóa thực tế khớp với món/danh mục đang có.
+   *
+   * Không gọi AI/API bên ngoài nên rất nhanh và không phát sinh phí.
+   */
+  const categoryInterestScores =
+    useMemo(() => {
+      const scores:
+        Record<string, number> =
+        {};
+
+      const categoryKeys =
+        Object.keys(
+          CATEGORY_SUGGESTIONS
+        );
+
+      categoryKeys.forEach(
+        (category) => {
+          scores[category] = 0;
+        }
+      );
+
+      if (
+        searchSignals.length ===
+        0
+      ) {
+        return scores;
+      }
+
+      const now =
+        Date.now();
+
+      searchSignals
+        .slice(
+          0,
+          SEARCH_PROFILE_LIMIT
+        )
+        .forEach(
+          (entry) => {
+            const ageDays =
+              Math.max(
+                0,
+                now -
+                  entry.lastSearchedAt
+              ) /
+              (
+                1000 *
+                60 *
+                60 *
+                24
+              );
+
+            /**
+             * Tìm gần đây có giá trị lớn hơn.
+             * Sau 30 ngày vẫn còn tín hiệu nhẹ.
+             */
+            const recencyWeight =
+              ageDays <= 1
+                ? 1
+                : ageDays <= 7
+                  ? 0.85
+                  : ageDays <= 30
+                    ? 0.55
+                    : 0.3;
+
+            const repeatWeight =
+              1 +
+              Math.min(
+                3,
+                Math.log2(
+                  1 +
+                  Math.max(
+                    1,
+                    entry.count
+                  )
+                )
+              );
+
+            const weight =
+              recencyWeight *
+              repeatWeight;
+
+            categoryKeys.forEach(
+              (category) => {
+                const categoryText =
+                  normalizeSearchText(
+                    category
+                  );
+
+                const suggestions =
+                  CATEGORY_SUGGESTIONS[
+                    category
+                  ] || [];
+
+                const categoryMatch =
+                  categoryText.includes(
+                    entry.normalized
+                  ) ||
+                  entry.normalized.includes(
+                    categoryText
+                  );
+
+                const suggestionMatch =
+                  suggestions.some(
+                    (suggestion) => {
+                      const text =
+                        normalizeSearchText(
+                          suggestion
+                        );
+
+                      return (
+                        text.includes(
+                          entry.normalized
+                        ) ||
+                        entry.normalized.includes(
+                          text
+                        )
+                      );
+                    }
+                  );
+
+                if (
+                  categoryMatch
+                ) {
+                  scores[
+                    category
+                  ] +=
+                    8 *
+                    weight;
+                }
+
+                if (
+                  suggestionMatch
+                ) {
+                  scores[
+                    category
+                  ] +=
+                    10 *
+                    weight;
+                }
+              }
+            );
+
+            /**
+             * Từ khóa có thể là tên món cụ thể không nằm trong
+             * CATEGORY_SUGGESTIONS. So với dữ liệu sản phẩm thật.
+             */
+            let matchedCount = 0;
+
+            for (
+              const product
+              of productViews
+            ) {
+              if (
+                matchedCount >=
+                12
+              ) {
+                break;
+              }
+
+              const productText =
+                normalizeSearchText(
+                  `${product.name} ${product.description} ${product.category} ${product.shopName}`
+                );
+
+              if (
+                !productText.includes(
+                  entry.normalized
+                )
+              ) {
+                continue;
+              }
+
+              matchedCount += 1;
+
+              const productCategory =
+                normalizeSearchText(
+                  product.category
+                );
+
+              const matchedCategory =
+                categoryKeys.find(
+                  (category) => {
+                    const categoryText =
+                      normalizeSearchText(
+                        category
+                      );
+
+                    return (
+                      productCategory.includes(
+                        categoryText
+                      ) ||
+                      categoryText.includes(
+                        productCategory
+                      )
+                    );
+                  }
+                );
+
+              if (
+                matchedCategory
+              ) {
+                scores[
+                  matchedCategory
+                ] +=
+                  3 *
+                  weight;
+              }
+            }
+          }
+        );
+
+      return scores;
+    }, [
+      searchSignals,
+      productViews,
+    ]);
+
+  const favoriteFoodCategories =
+    useMemo(() => {
+      return Object.entries(
+        categoryInterestScores
+      )
+        .filter(
+          ([, score]) =>
+            score > 0
+        )
+        .sort(
+          (
+            [, a],
+            [, b]
+          ) => b - a
+        )
+        .slice(0, 3)
+        .map(
+          ([category]) =>
+            category
+        );
+    }, [
+      categoryInterestScores,
+    ]);
+
+  /**
+   * ==========================================================
    * RANKING
    * ==========================================================
    */
@@ -4644,6 +5387,14 @@ export default function HomePage() {
     useMemo(() => {
       const currentHour =
         new Date().getHours();
+
+      const maxInterestScore =
+        Math.max(
+          0,
+          ...Object.values(
+            categoryInterestScores
+          )
+        );
 
       return productViews.map(
         (product) => {
@@ -4765,6 +5516,92 @@ export default function HomePage() {
             }
           }
 
+          /**
+           * --------------------------------------------------
+           * PERSONALIZATION SCORE
+           * --------------------------------------------------
+           */
+          const normalizedProductCategory =
+            normalizeSearchText(
+              product.category
+            );
+
+          const categoryAffinity =
+            maxInterestScore > 0
+              ? Math.max(
+                0,
+                ...Object.entries(
+                  categoryInterestScores
+                ).map(
+                  (
+                    [
+                      categoryKey,
+                      score,
+                    ]
+                  ) => {
+                    const normalizedCategory =
+                      normalizeSearchText(
+                        categoryKey
+                      );
+
+                    const matches =
+                      normalizedProductCategory.includes(
+                        normalizedCategory
+                      ) ||
+                      normalizedCategory.includes(
+                        normalizedProductCategory
+                      );
+
+                    return matches
+                      ? (
+                        score /
+                        maxInterestScore
+                      ) * 100
+                      : 0;
+                  }
+                )
+              )
+              : 0;
+
+          const normalizedProductText =
+            normalizeSearchText(
+              `${product.name} ${product.description} ${product.category} ${product.shopName}`
+            );
+
+          let directSearchAffinity =
+            0;
+
+          searchSignals
+            .slice(0, 10)
+            .forEach(
+              (entry) => {
+                if (
+                  normalizedProductText.includes(
+                    entry.normalized
+                  )
+                ) {
+                  directSearchAffinity +=
+                    Math.min(
+                      35,
+                      12 +
+                        entry.count *
+                        4
+                    );
+                }
+              }
+            );
+
+          const personalizationScore =
+            Math.min(
+              100,
+              categoryAffinity *
+                0.7 +
+                Math.min(
+                  45,
+                  directSearchAffinity
+                )
+            );
+
           const totalScore =
             distanceScore *
             0.3 +
@@ -4777,17 +5614,68 @@ export default function HomePage() {
             timeScore *
             0.15 +
             voucherScore *
-            0.05;
+            0.05 +
+            personalizationScore *
+            0.25;
 
           return {
             ...product,
             totalScore,
+            personalizationScore,
           };
         }
       );
     }, [
       productViews,
       shops,
+      categoryInterestScores,
+      searchSignals,
+    ]);
+
+  /**
+   * Các món cá nhân hóa hiển thị ở khu "Dành cho bạn".
+   * Chỉ giữ tối đa 8 card để không ảnh hưởng hiệu năng 1.000 sản phẩm.
+   */
+  const personalizedProducts =
+    useMemo(() => {
+      if (
+        searchSignals.length ===
+        0
+      ) {
+        return [];
+      }
+
+      return [
+        ...rankedProducts,
+      ]
+        .filter(
+          (product) =>
+            Number(
+              product
+                .personalizationScore ||
+                0
+            ) > 0
+        )
+        .sort(
+          (a, b) =>
+            Number(
+              b.personalizationScore ||
+                0
+            ) -
+              Number(
+                a.personalizationScore ||
+                  0
+              ) ||
+            b.totalScore -
+              a.totalScore
+        )
+        .slice(
+          0,
+          PERSONALIZED_PRODUCT_LIMIT
+        );
+    }, [
+      rankedProducts,
+      searchSignals.length,
     ]);
 
   /**
@@ -5562,6 +6450,13 @@ export default function HomePage() {
                                 item
                               );
 
+                              /**
+                               * Click lại lịch sử cũng là một tín hiệu sở thích.
+                               */
+                              saveSearchKeyword(
+                                item
+                              );
+
                               setIsSearchFocused(
                                 false
                               );
@@ -6021,110 +6916,209 @@ export default function HomePage() {
         )}
 
       {/* ======================================================
-          SMART SUGGESTIONS
+          PERSONALIZED FOOD SUGGESTIONS
           ====================================================== */}
 
       <div className="bg-white py-3 px-3 border-b border-stone-200/60 shadow-2xs space-y-2">
 
-        <div className="flex items-center justify-between">
+        <div className="flex items-start justify-between gap-3">
 
-          <h3 className="text-xs font-black text-stone-800 tracking-tight flex items-center gap-1">
-            ✨ ĐỀ XUẤT MÓN
-            ĂN CHO BẠN
-          </h3>
+          <div className="min-w-0">
+            <h3 className="text-xs font-black text-stone-800 tracking-tight flex items-center gap-1">
+              ✨ {personalizedProducts.length > 0
+                ? "DÀNH CHO BẠN"
+                : "ĐỀ XUẤT MÓN ĂN"}
+            </h3>
 
-          <span className="text-[10px] text-[#ee4d2d] font-bold bg-orange-50 px-2 py-0.5 rounded-full border border-orange-200/50">
-            AI gợi ý
+            {personalizedProducts.length > 0 &&
+              favoriteFoodCategories.length > 0 && (
+                <p className="text-[9px] text-stone-400 mt-0.5 truncate">
+                  Dựa trên:{" "}
+                  {favoriteFoodCategories
+                    .map((category) =>
+                      category.replace(
+                        /^[^\p{L}\p{N}]+/u,
+                        ""
+                      )
+                    )
+                    .join(" • ")}
+                </p>
+              )}
+          </div>
+
+          <span className="shrink-0 text-[9px] text-[#ee4d2d] font-bold bg-orange-50 px-2 py-1 rounded-full border border-orange-200/50">
+            {personalizedProducts.length > 0
+              ? "Theo lịch sử"
+              : "Gợi ý"}
           </span>
 
         </div>
 
-        <div className="flex gap-2 overflow-x-auto no-scrollbar py-1">
+        {personalizedProducts.length > 0 ? (
+          <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
 
-          {SMART_SUGGESTIONS.map(
-            (item) => {
-              const isActive =
-                activeTab ===
-                item.category &&
-                searchQuery ===
-                "";
+            {personalizedProducts.map(
+              (product) => {
+                const shop =
+                  shops[
+                    product.shopId
+                  ];
 
-              return (
-                <div
-                  key={item.id}
-                  onClick={() => {
-                    if (
-                      isActive
-                    ) {
-                      setActiveTab(
-                        "all"
-                      );
-
-                      setQuickFilter(
-                        "recommend"
-                      );
-                    } else {
-                      setActiveTab(
-                        item.category
-                      );
-
-                      setQuickFilter(
-                        item.filter
-                      );
-
-                      setSearchQuery(
-                        ""
-                      );
+                return (
+                  <button
+                    key={`personal-${product.id}`}
+                    type="button"
+                    onClick={() =>
+                      setSelectedProduct(
+                        product
+                      )
                     }
-                  }}
-                  className={`min-w-[130px] rounded-xl p-2.5 cursor-pointer transition-all duration-200 shrink-0 space-y-1 relative active:scale-95 border ${isActive
-                    ? "bg-gradient-to-br from-orange-500 to-[#ee4d2d] text-white border-[#ee4d2d] shadow-md -translate-y-0.5 ring-2 ring-orange-300/50"
-                    : "bg-gradient-to-br from-orange-50/60 to-amber-50/30 border-orange-200/60 text-stone-800 hover:border-[#ee4d2d] hover:bg-orange-50"
-                    }`}
-                >
+                    className="w-[132px] shrink-0 text-left bg-stone-50 hover:bg-orange-50/60 border border-stone-200/70 hover:border-orange-200 rounded-xl overflow-hidden transition active:scale-[0.98]"
+                  >
+                    <div className="relative aspect-[4/3] bg-stone-100 overflow-hidden">
+                      <img
+                        src={
+                          product.imageUrl ||
+                          DEFAULT_PRODUCT_IMAGE
+                        }
+                        alt={
+                          product.name
+                        }
+                        loading="lazy"
+                        className="w-full h-full object-cover"
+                      />
 
-                  <div className="flex items-center justify-between">
+                      {product.promotion
+                        .isDiscountActive && (
+                        <span className="absolute top-1.5 left-1.5 text-[8px] font-black bg-[#ee4d2d] text-white px-1.5 py-0.5 rounded-md shadow-sm">
+                          -
+                          {
+                            product
+                              .promotion
+                              .discountPercent
+                          }
+                          %
+                        </span>
+                      )}
+                    </div>
 
-                    <span className="text-2xl">
-                      {
-                        item.emoji
+                    <div className="p-2 space-y-1">
+                      <p className="text-[10px] font-bold text-stone-800 line-clamp-2 min-h-[28px]">
+                        {product.name}
+                      </p>
+
+                      <p className="text-[10px] font-black text-[#ee4d2d]">
+                        {formatCurrency(
+                          product
+                            .promotion
+                            .currentPrice
+                        )}
+                      </p>
+
+                      <div className="flex items-center justify-between gap-1 text-[8px] text-stone-400">
+                        <span className="truncate">
+                          {shop?.name ||
+                            product.shopName}
+                        </span>
+
+                        <span className="shrink-0">
+                          {
+                            product.distanceText
+                          }
+                        </span>
+                      </div>
+                    </div>
+                  </button>
+                );
+              }
+            )}
+
+          </div>
+        ) : (
+          <div className="flex gap-2 overflow-x-auto no-scrollbar py-1">
+
+            {SMART_SUGGESTIONS.map(
+              (item) => {
+                const isActive =
+                  activeTab ===
+                  item.category &&
+                  searchQuery ===
+                  "";
+
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => {
+                      if (
+                        isActive
+                      ) {
+                        setActiveTab(
+                          "all"
+                        );
+
+                        setQuickFilter(
+                          "recommend"
+                        );
+                      } else {
+                        setActiveTab(
+                          item.category
+                        );
+
+                        setQuickFilter(
+                          item.filter
+                        );
+
+                        setSearchQuery(
+                          ""
+                        );
                       }
-                    </span>
+                    }}
+                    className={`min-w-[130px] rounded-xl p-2.5 cursor-pointer transition-all duration-150 shrink-0 space-y-1 relative active:scale-95 border text-left ${
+                      isActive
+                        ? "bg-gradient-to-br from-orange-500 to-[#ee4d2d] text-white border-[#ee4d2d] shadow-sm"
+                        : "bg-gradient-to-br from-orange-50/60 to-amber-50/30 border-orange-200/60 text-stone-800 hover:border-[#ee4d2d]"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xl">
+                        {
+                          item.emoji
+                        }
+                      </span>
 
-                    <span
-                      className={`text-[9px] font-black px-1.5 py-0.5 rounded-md ${isActive
-                        ? "bg-white text-[#ee4d2d]"
-                        : "bg-orange-200/60 text-orange-900"
+                      <span
+                        className={`text-[8px] font-black px-1.5 py-0.5 rounded-md ${
+                          isActive
+                            ? "bg-white text-[#ee4d2d]"
+                            : "bg-orange-100 text-orange-800"
                         }`}
-                    >
-                      {isActive
-                        ? "✓ Đang chọn"
-                        : "Gợi ý"}
-                    </span>
-
-                  </div>
-
-                  <div>
+                      >
+                        {isActive
+                          ? "✓ Đang chọn"
+                          : "Gợi ý"}
+                      </span>
+                    </div>
 
                     <p
-                      className={`text-[11px] font-bold truncate ${isActive
-                        ? "text-white"
-                        : "text-stone-800"
-                        }`}
+                      className={`text-[10px] font-bold truncate ${
+                        isActive
+                          ? "text-white"
+                          : "text-stone-800"
+                      }`}
                     >
                       {
                         item.label
                       }
                     </p>
+                  </button>
+                );
+              }
+            )}
 
-                  </div>
+          </div>
+        )}
 
-                </div>
-              );
-            }
-          )}
-
-        </div>
       </div>
 
       {/* ======================================================
