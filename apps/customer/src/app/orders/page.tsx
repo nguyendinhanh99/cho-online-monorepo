@@ -211,16 +211,6 @@ const formatDateTimeValue = (value: any) => {
   });
 };
 
-const formatDateOnlyValue = (value: any) => {
-  const ms = getDateValue(value);
-  if (!ms) return "Chưa cập nhật";
-  return new Date(ms).toLocaleDateString("vi-VN", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  });
-};
-
 const shortId = (value?: string) =>
   value ? `#${value.slice(0, 8).toUpperCase()}` : "—";
 
@@ -245,32 +235,6 @@ const openGoogleMaps = (lat?: number, lng?: number) => {
   );
 };
 
-const openGoogleDirections = (
-  customerLat?: number,
-  customerLng?: number,
-  storeLat?: number,
-  storeLng?: number
-) => {
-  const from = getCoords(customerLat, customerLng);
-  const to = getCoords(storeLat, storeLng);
-  if (!to || typeof window === "undefined") return;
-
-  const params = new URLSearchParams({
-    api: "1",
-    destination: `${to.latitude},${to.longitude}`,
-  });
-
-  if (from) {
-    params.set("origin", `${from.latitude},${from.longitude}`);
-  }
-
-  window.open(
-    `https://www.google.com/maps/dir/?${params.toString()}`,
-    "_blank",
-    "noopener,noreferrer"
-  );
-};
-
 export default function OrdersPage() {
   const router = useRouter();
 
@@ -282,7 +246,6 @@ export default function OrdersPage() {
     "all" | "unpaid" | "processing" | "completed" | "cancelled"
   >("all");
 
-  const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
   const [detailOrder, setDetailOrder] = useState<Order | null>(null);
 
   const [toast, setToast] = useState<ToastState>({
@@ -501,8 +464,16 @@ export default function OrdersPage() {
 
   const getPaymentLabel = (method?: string) => {
     const value = (method || "").toLowerCase();
-    if (value === "cod") return "COD / Thanh toán khi nhận hàng";
-    if (value === "bank_transfer") return "Chuyển khoản ngân hàng";
+    if (value === "cod" || value === "cash") {
+      return "Thanh toán khi nhận hàng";
+    }
+    if (
+      value === "bank_transfer" ||
+      value === "banking" ||
+      value === "bank"
+    ) {
+      return "Chuyển khoản QR";
+    }
     if (value === "momo") return "MoMo";
     if (value === "vnpay") return "VNPay";
     if (value === "wallet") return "Ví Anvami";
@@ -696,18 +667,26 @@ export default function OrdersPage() {
     showToast("🎉 Đã thêm món vào giỏ hàng!", "success");
   };
 
-  const renderPaymentSummary = (order: Order, compact = false) => {
+  const renderPaymentSummary = (order: Order) => {
     const subtotal = getDisplaySubtotal(order);
     const discount = getDiscountBreakdown(order);
     const shipping = getShippingBreakdown(order);
     const total = getOrderTotal(order);
 
+    // shippingFee trong order là phí ship cuối cùng khách trả.
+    // Khi có voucher ship, phục dựng phí trước ưu đãi để phần tổng kết dễ hiểu.
+    const shippingBeforeVoucher = Math.max(
+      shipping.shippingFee + discount.shippingVoucher,
+      shipping.baseShipping + shipping.surcharge
+    );
+
+    const otherDiscount = Math.max(
+      0,
+      discount.totalDiscount - discount.totalVoucher
+    );
+
     return (
-      <div
-        className={`rounded-2xl border border-stone-100 bg-stone-50 ${
-          compact ? "p-3" : "p-4"
-        } space-y-2.5`}
-      >
+      <div className="rounded-2xl bg-stone-50 border border-stone-100 p-4 space-y-2.5">
         <div className="flex justify-between gap-4 text-[11px] text-stone-500">
           <span>Tiền hàng</span>
           <span className="font-semibold text-stone-700">
@@ -716,16 +695,17 @@ export default function OrdersPage() {
         </div>
 
         <div className="flex justify-between gap-4 text-[11px] text-stone-500">
-          <span>Phí vận chuyển thực thu</span>
+          <span>Phí giao hàng</span>
           <span className="font-semibold text-stone-700">
-            {formatCurrencyValue(shipping.shippingFee)}
+            {formatCurrencyValue(shippingBeforeVoucher)}
           </span>
         </div>
 
         {discount.shopVoucher > 0 && (
           <div className="flex justify-between gap-4 text-[11px] text-emerald-600">
             <span className="truncate">
-              Voucher shop {order.shopVoucherCode || ""}
+              Ưu đãi cửa hàng
+              {order.shopVoucherCode ? ` · ${order.shopVoucherCode}` : ""}
             </span>
             <span className="font-semibold whitespace-nowrap">
               -{formatCurrencyValue(discount.shopVoucher)}
@@ -736,7 +716,10 @@ export default function OrdersPage() {
         {discount.shippingVoucher > 0 && (
           <div className="flex justify-between gap-4 text-[11px] text-emerald-600">
             <span className="truncate">
-              Voucher ship {order.shippingVoucherCode || ""}
+              Ưu đãi vận chuyển
+              {order.shippingVoucherCode
+                ? ` · ${order.shippingVoucherCode}`
+                : ""}
             </span>
             <span className="font-semibold whitespace-nowrap">
               -{formatCurrencyValue(discount.shippingVoucher)}
@@ -744,24 +727,20 @@ export default function OrdersPage() {
           </div>
         )}
 
-        {discount.totalDiscount > 0 &&
-          discount.totalVoucher !== discount.totalDiscount && (
-            <div className="flex justify-between gap-4 text-[11px] text-emerald-600">
-              <span>Giảm giá tổng</span>
-              <span>-{formatCurrencyValue(discount.totalDiscount)}</span>
-            </div>
-          )}
-
-        <div className="border-t border-stone-200 pt-2 flex justify-between items-center gap-3">
-          <div>
-            <p className="text-[11px] font-bold text-stone-800">
-              Thành tiền
-            </p>
-            <p className="text-[9px] text-stone-400">
-              Theo trường totalPrice của đơn hàng
-            </p>
+        {otherDiscount > 0 && (
+          <div className="flex justify-between gap-4 text-[11px] text-emerald-600">
+            <span>Ưu đãi khác</span>
+            <span className="font-semibold whitespace-nowrap">
+              -{formatCurrencyValue(otherDiscount)}
+            </span>
           </div>
-          <span className="text-lg font-black text-[#ee4d2d]">
+        )}
+
+        <div className="border-t border-stone-200 pt-2.5 flex items-center justify-between gap-4">
+          <span className="text-xs font-black text-stone-900">
+            Tổng thanh toán
+          </span>
+          <span className="text-xl font-black text-[#ee4d2d]">
             {formatCurrencyValue(total)}
           </span>
         </div>
@@ -769,108 +748,6 @@ export default function OrdersPage() {
     );
   };
 
-  const renderShippingDetails = (order: Order) => {
-    const shipping = getShippingBreakdown(order);
-
-    return (
-      <div className="rounded-2xl border border-sky-100 bg-sky-50/60 p-4 space-y-3">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h4 className="text-xs font-black text-sky-900">
-              🛵 Chi tiết phí vận chuyển
-            </h4>
-            <p className="text-[10px] text-sky-600">
-              Khoản phí thực tế được lưu trong đơn hàng
-            </p>
-          </div>
-          <span className="text-sm font-black text-sky-900">
-            {formatCurrencyValue(shipping.shippingFee)}
-          </span>
-        </div>
-
-        <div className="grid grid-cols-2 gap-2">
-          <div className="rounded-xl bg-white border border-sky-100 p-2.5">
-            <p className="text-[9px] text-stone-400">Phí ship gốc</p>
-            <p className="text-xs font-black text-stone-800">
-              {formatCurrencyValue(shipping.baseShipping)}
-            </p>
-          </div>
-
-          <div className="rounded-xl bg-white border border-sky-100 p-2.5">
-            <p className="text-[9px] text-stone-400">Phụ phí áp dụng</p>
-            <p className="text-xs font-black text-stone-800">
-              {formatCurrencyValue(shipping.surcharge)}
-            </p>
-          </div>
-
-          <div className="rounded-xl bg-white border border-sky-100 p-2.5">
-            <p className="text-[9px] text-stone-400">Voucher phí ship</p>
-            <p className="text-xs font-black text-emerald-600">
-              -{formatCurrencyValue(shipping.shippingVoucher)}
-            </p>
-          </div>
-
-          <div className="rounded-xl bg-white border border-sky-100 p-2.5">
-            <p className="text-[9px] text-stone-400">Công thức kiểm tra</p>
-            <p className="text-[10px] font-bold text-stone-700 leading-4">
-              {formatCurrencyValue(shipping.baseShipping)} +{" "}
-              {formatCurrencyValue(shipping.surcharge)} -{" "}
-              {formatCurrencyValue(shipping.shippingVoucher)}
-            </p>
-          </div>
-        </div>
-
-        {(shipping.rainFee > 0 ||
-          shipping.peakHourFee > 0 ||
-          shipping.nightFee > 0 ||
-          order.isRaining) && (
-          <div className="rounded-xl bg-white/80 border border-sky-100 px-3 py-2.5">
-            <p className="text-[10px] font-bold text-stone-700 mb-1.5">
-              Điều kiện áp dụng phụ phí
-            </p>
-            <div className="flex flex-wrap gap-1.5">
-              {order.isRaining && (
-                <span className="px-2 py-1 rounded-full bg-blue-50 text-blue-700 text-[9px] font-bold">
-                  🌧️ Trời mưa
-                </span>
-              )}
-              {shipping.rainFee > 0 && (
-                <span className="px-2 py-1 rounded-full bg-blue-50 text-blue-700 text-[9px] font-bold">
-                  Mưa +{formatCurrencyValue(shipping.rainFee)}
-                </span>
-              )}
-              {shipping.peakHourFee > 0 && (
-                <span className="px-2 py-1 rounded-full bg-orange-50 text-orange-700 text-[9px] font-bold">
-                  Giờ cao điểm +{formatCurrencyValue(shipping.peakHourFee)}
-                </span>
-              )}
-              {shipping.nightFee > 0 && (
-                <span className="px-2 py-1 rounded-full bg-slate-100 text-slate-700 text-[9px] font-bold">
-                  Ban đêm +{formatCurrencyValue(shipping.nightFee)}
-                </span>
-              )}
-            </div>
-            <p className="text-[9px] text-stone-400 mt-2">
-              Phụ phí chi tiết ở trên chỉ để giải thích dữ liệu; không cộng
-              lặp với trường “appliedFee”.
-            </p>
-          </div>
-        )}
-
-        {shipping.calculatedNetShipping !== shipping.shippingFee && (
-          <p className="text-[9px] text-amber-700 bg-amber-50 border border-amber-100 rounded-xl p-2">
-            Công thức kiểm tra đang cho{" "}
-            <strong>
-              {formatCurrencyValue(shipping.calculatedNetShipping)}
-            </strong>
-            , nhưng đơn hàng lưu phí ship thực thu là{" "}
-            <strong>{formatCurrencyValue(shipping.shippingFee)}</strong>. Giao
-            diện ưu tiên số tiền đã lưu trong order.shippingFee.
-          </p>
-        )}
-      </div>
-    );
-  };
 
   const renderOrderItems = (order: Order, compact = false) => {
     if (!order.items?.length) {
@@ -882,15 +759,15 @@ export default function OrdersPage() {
     }
 
     return (
-      <div className="space-y-2.5">
+      <div className="divide-y divide-stone-100">
         {order.items.map((item: any, idx) => {
           if (typeof item === "string") {
             return (
               <div
                 key={`${order.id}-item-${idx}`}
-                className="text-xs text-stone-700 font-medium"
+                className="py-2 text-xs font-semibold text-stone-700"
               >
-                • {item}
+                {item}
               </div>
             );
           }
@@ -904,30 +781,29 @@ export default function OrdersPage() {
           return (
             <div
               key={`${order.id}-item-${idx}`}
-              className={`flex items-start gap-3 ${
-                compact ? "py-0.5" : "py-1"
-              }`}
+              className={`flex items-center gap-3 ${compact ? "py-2" : "py-2.5"}`}
             >
               <div
                 className={`${
                   compact ? "w-11 h-11 rounded-xl" : "w-14 h-14 rounded-2xl"
-                } bg-stone-100 border border-stone-200/80 overflow-hidden flex-shrink-0 flex items-center justify-center text-lg`}
+                } bg-stone-100 border border-stone-200/80 overflow-hidden shrink-0 flex items-center justify-center`}
               >
                 {image ? (
                   <img
                     src={image}
                     alt={item.name || "Sản phẩm"}
+                    loading="lazy"
                     className="w-full h-full object-cover"
                   />
                 ) : (
-                  "🍲"
+                  <span className="text-lg">🍲</span>
                 )}
               </div>
 
               <div className="min-w-0 flex-1">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <h4 className="text-xs font-bold text-stone-800">
+                    <h4 className="text-xs font-bold text-stone-800 line-clamp-2">
                       {item.name || "Sản phẩm"}
                     </h4>
                     <p className="text-[10px] text-stone-500 mt-0.5">
@@ -940,7 +816,7 @@ export default function OrdersPage() {
                       {formatCurrencyValue(itemTotal)}
                     </div>
                     {originalPrice > itemPrice && (
-                      <div className="text-[9px] text-stone-400 line-through">
+                      <div className="text-[9px] text-stone-400 line-through mt-0.5">
                         {formatCurrencyValue(originalPrice * quantity)}
                       </div>
                     )}
@@ -948,18 +824,9 @@ export default function OrdersPage() {
                 </div>
 
                 {item.note && (
-                  <div className="mt-1.5 rounded-lg bg-amber-50 border border-amber-100 px-2 py-1 text-[10px] text-amber-700">
-                    Ghi chú món: {item.note}
-                  </div>
-                )}
-
-                {!compact && (
-                  <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1.5 text-[9px] text-stone-400">
-                    {item.merchantCode && (
-                      <span>Mã quán: {item.merchantCode}</span>
-                    )}
-                    {item.id && <span>SP: {item.id.slice(0, 10)}...</span>}
-                  </div>
+                  <p className="mt-1 text-[10px] text-amber-700 line-clamp-2">
+                    Ghi chú: {item.note}
+                  </p>
                 )}
               </div>
             </div>
@@ -968,6 +835,7 @@ export default function OrdersPage() {
       </div>
     );
   };
+
 
   const renderInfoRow = (
     label: string,
@@ -989,81 +857,76 @@ export default function OrdersPage() {
 
   const renderOrderDetailContent = (order: Order) => {
     const statusMeta = getStatusMeta(order);
-    const subtotal = getDisplaySubtotal(order);
-    const discount = getDiscountBreakdown(order);
-    const total = getOrderTotal(order);
     const customerCoords = getCoords(
       order.customerLat,
       order.customerLng,
       order.customerLocation
     );
-    const storeCoords = getCoords(
-      order.storeLat,
-      order.storeLng,
-      order.storeLocation
+
+    const paymentStatusLabel =
+      order.paymentStatus ||
+      ((order.status || "").toLowerCase() === "pending_payment"
+        ? "Chưa thanh toán"
+        : (order.paymentMethod || "").toLowerCase() === "cod"
+        ? "Thanh toán khi nhận hàng"
+        : "Đã ghi nhận");
+
+    const itemCount = (order.items || []).reduce(
+      (sum, item: any) =>
+        sum +
+        (typeof item === "string"
+          ? 1
+          : Math.max(1, toNumber(item.quantity, 1))),
+      0
     );
 
     return (
-      <div className="space-y-4">
+      <div className="space-y-3">
         <div className="rounded-2xl bg-stone-50 border border-stone-100 p-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <p className="text-[10px] font-bold text-stone-400">
-                MÃ ĐƠN HÀNG
-              </p>
-              <h3 className="text-lg font-black text-stone-900 tracking-tight">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-[10px] text-stone-400 font-mono">
                 {shortId(order.id)}
+              </p>
+              <h3 className="text-sm font-black text-stone-900 mt-1 truncate">
+                {order.shopName || order.storeName || "Cửa hàng"}
               </h3>
-              {order.paymentCode && (
-                <p className="text-[10px] font-mono text-stone-500 mt-1">
-                  Mã thanh toán: {order.paymentCode}
-                </p>
-              )}
+              <p className="text-[10px] text-stone-400 mt-1">
+                {formatDateTimeValue(order.createdAt)}
+              </p>
             </div>
 
             <span
-              className={`px-3 py-1.5 rounded-full border text-[10px] font-black ${statusMeta.className}`}
+              className={`shrink-0 px-3 py-1.5 rounded-full border text-[10px] font-black ${statusMeta.className}`}
             >
               {statusMeta.icon} {statusMeta.label}
             </span>
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-2">
-          <div className="rounded-2xl border border-stone-100 bg-white p-3">
-            <p className="text-[9px] text-stone-400">Tạo đơn</p>
-            <p className="text-[11px] font-bold text-stone-700 mt-1">
-              {formatDateTimeValue(order.createdAt)}
-            </p>
+        <div className="rounded-2xl border border-stone-100 bg-white p-4">
+          <div className="flex items-center justify-between gap-3 mb-2">
+            <h4 className="text-xs font-black text-stone-900">
+              Sản phẩm
+            </h4>
+            <span className="text-[10px] text-stone-400">
+              {itemCount} sản phẩm
+            </span>
           </div>
-          <div className="rounded-2xl border border-stone-100 bg-white p-3">
-            <p className="text-[9px] text-stone-400">Cập nhật</p>
-            <p className="text-[11px] font-bold text-stone-700 mt-1">
-              {formatDateTimeValue(order.updatedAt || order.createdAt)}
-            </p>
-          </div>
-          <div className="rounded-2xl border border-stone-100 bg-white p-3">
-            <p className="text-[9px] text-stone-400">Shop nhận đơn</p>
-            <p className="text-[11px] font-bold text-stone-700 mt-1">
-              {formatDateTimeValue(order.acceptedAt)}
-            </p>
-          </div>
-          <div className="rounded-2xl border border-stone-100 bg-white p-3">
-            <p className="text-[9px] text-stone-400">Hoàn thành</p>
-            <p className="text-[11px] font-bold text-stone-700 mt-1">
-              {formatDateTimeValue(order.completedAt)}
-            </p>
-          </div>
+          {renderOrderItems(order)}
         </div>
 
         <div className="rounded-2xl border border-stone-100 bg-white p-4">
-          <h4 className="text-xs font-black text-stone-900 mb-2">
-            👤 Thông tin người nhận
+          <h4 className="text-xs font-black text-stone-900 mb-1">
+            Giao hàng
           </h4>
-          {renderInfoRow("Người nhận", order.recipientName || order.customerName)}
-          {renderInfoRow("Số điện thoại", order.phone)}
           {renderInfoRow(
-            "Địa chỉ giao hàng",
+            "Người nhận",
+            order.recipientName || order.customerName
+          )}
+          {order.phone && renderInfoRow("Số điện thoại", order.phone)}
+          {renderInfoRow(
+            "Địa chỉ",
             order.customerAddress || order.address || "Chưa cập nhật",
             customerCoords ? (
               <button
@@ -1076,248 +939,86 @@ export default function OrdersPage() {
                 }
                 className="mt-1 text-[10px] text-blue-600 font-bold hover:underline cursor-pointer"
               >
-                📍 Mở vị trí trên Google Maps
+                Mở bản đồ
               </button>
             ) : null
           )}
-          {customerCoords &&
-            renderInfoRow(
-              "Tọa độ giao hàng",
-              `${customerCoords.latitude.toFixed(7)}, ${customerCoords.longitude.toFixed(7)}`
-            )}
           {order.shipperNote &&
-            renderInfoRow("Ghi chú giao hàng", order.shipperNote)}
+            renderInfoRow("Ghi chú", order.shipperNote)}
         </div>
 
         <div className="rounded-2xl border border-stone-100 bg-white p-4">
-          <h4 className="text-xs font-black text-stone-900 mb-2">
-            🏪 Thông tin cửa hàng
+          <h4 className="text-xs font-black text-stone-900 mb-1">
+            Cửa hàng & giao nhận
           </h4>
           {renderInfoRow(
-            "Tên quán",
+            "Cửa hàng",
             order.shopName || order.storeName || "Chưa cập nhật"
           )}
-          {renderInfoRow("Mã quán", order.merchantCode)}
-          {renderInfoRow("Số điện thoại quán", order.storePhone)}
-          {renderInfoRow("Địa chỉ quán", order.storeAddress)}
-          {storeCoords &&
+          {order.storePhone &&
+            renderInfoRow("Số điện thoại", order.storePhone)}
+          {(order.distanceStr || order.distanceKm != null) &&
             renderInfoRow(
-              "Tọa độ quán",
-              `${storeCoords.latitude.toFixed(7)}, ${storeCoords.longitude.toFixed(7)}`,
-              <button
-                type="button"
-                onClick={() =>
-                  openGoogleMaps(storeCoords.latitude, storeCoords.longitude)
-                }
-                className="mt-1 text-[10px] text-blue-600 font-bold hover:underline cursor-pointer"
-              >
-                📍 Mở vị trí quán
-              </button>
+              "Khoảng cách",
+              order.distanceStr ||
+                `${toNumber(order.distanceKm).toFixed(2)} km`
             )}
-          {renderInfoRow(
-            "Khoảng cách",
-            order.distanceStr ||
-              (order.distanceKm != null
-                ? `${toNumber(order.distanceKm).toFixed(2)} km`
-                : "Chưa cập nhật"),
-            customerCoords && storeCoords ? (
-              <button
-                type="button"
-                onClick={() =>
-                  openGoogleDirections(
-                    customerCoords.latitude,
-                    customerCoords.longitude,
-                    storeCoords.latitude,
-                    storeCoords.longitude
-                  )
-                }
-                className="mt-1 text-[10px] text-orange-600 font-bold hover:underline cursor-pointer"
-              >
-                🗺️ Xem chỉ đường
-              </button>
-            ) : null
-          )}
-        </div>
-
-        {(order.driverName || order.shipperName || order.driverId || order.shipperId) && (
-          <div className="rounded-2xl border border-blue-100 bg-blue-50/60 p-4">
-            <h4 className="text-xs font-black text-blue-900 mb-2">
-              🛵 Thông tin shipper
-            </h4>
-            {renderInfoRow(
+          {(order.driverName || order.shipperName) &&
+            renderInfoRow(
               "Shipper",
-              order.driverName || order.shipperName || "Đang cập nhật"
+              order.driverName || order.shipperName
             )}
-            {renderInfoRow("ID shipper", order.driverId || order.shipperId)}
-            {order.driverNote && renderInfoRow("Ghi chú shipper", order.driverNote)}
-          </div>
-        )}
-
-        <div className="rounded-2xl border border-stone-100 bg-white p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h4 className="text-xs font-black text-stone-900">
-              🍲 Sản phẩm trong đơn
-            </h4>
-            <span className="text-[10px] text-stone-400">
-              {(order.items || []).reduce(
-                (sum, item: any) =>
-                  sum +
-                  (typeof item === "string"
-                    ? 1
-                    : Math.max(1, toNumber(item.quantity, 1))),
-                0
-              )}{" "}
-              sản phẩm
-            </span>
-          </div>
-          {renderOrderItems(order)}
         </div>
 
-        {renderShippingDetails(order)}
-
         <div className="rounded-2xl border border-stone-100 bg-white p-4">
-          <h4 className="text-xs font-black text-stone-900 mb-3">
-            💳 Thông tin thanh toán
+          <h4 className="text-xs font-black text-stone-900 mb-1">
+            Thanh toán
           </h4>
-
-          {renderInfoRow(
-            "Phương thức",
-            getPaymentLabel(order.paymentMethod)
-          )}
-          {renderInfoRow("Mã thanh toán", order.paymentCode)}
-          {renderInfoRow(
-            "Trạng thái thanh toán",
-            order.paymentStatus ||
-              ((order.status || "").toLowerCase() === "pending_payment"
-                ? "Chưa thanh toán"
-                : order.paymentMethod === "cod"
-                ? "Thanh toán khi nhận hàng"
-                : "Đã ghi nhận")
-          )}
+          {renderInfoRow("Phương thức", getPaymentLabel(order.paymentMethod))}
+          {renderInfoRow("Trạng thái", paymentStatusLabel)}
+          {order.paymentCode &&
+            renderInfoRow(
+              "Mã thanh toán",
+              <span className="font-mono">{order.paymentCode}</span>
+            )}
 
           <div className="mt-3">{renderPaymentSummary(order)}</div>
         </div>
 
-        {(order.shopVoucherCode ||
-          order.shippingVoucherCode ||
-          discount.totalVoucher > 0) && (
-          <div className="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-4">
-            <h4 className="text-xs font-black text-emerald-900 mb-3">
-              🎟️ Voucher & giảm giá
-            </h4>
-
-            {order.shopVoucherCode &&
-              renderInfoRow(
-                "Voucher cửa hàng",
-                <span className="font-mono text-emerald-700">
-                  {order.shopVoucherCode}
-                </span>,
-                <span className="block text-[9px] text-emerald-600 mt-0.5">
-                  Giảm {formatCurrencyValue(discount.shopVoucher)}
-                </span>
-              )}
-
-            {order.shippingVoucherCode &&
-              renderInfoRow(
-                "Voucher phí ship",
-                <span className="font-mono text-emerald-700">
-                  {order.shippingVoucherCode}
-                </span>,
-                <span className="block text-[9px] text-emerald-600 mt-0.5">
-                  Giảm {formatCurrencyValue(discount.shippingVoucher)}
-                </span>
-              )}
-
-            {renderInfoRow(
-              "Tổng giảm giá",
-              `-${formatCurrencyValue(discount.totalDiscount)}`
-            )}
-          </div>
-        )}
-
-        {(order.pointsEarned != null ||
-          order.pointsUsed != null ||
-          order.pointsExpiresAt) && (
-          <div className="rounded-2xl border border-violet-100 bg-violet-50/60 p-4">
-            <h4 className="text-xs font-black text-violet-900 mb-2">
-              ⭐ Điểm Anvami
-            </h4>
-            {renderInfoRow(
-              "Điểm nhận được",
-              `${toNumber(order.pointsEarned)} điểm`
-            )}
-            {renderInfoRow(
-              "Điểm đã dùng",
-              `${toNumber(order.pointsUsed)} điểm`
-            )}
-            {renderInfoRow(
-              "Hạn điểm",
-              order.pointsExpiresAt
-                ? formatDateOnlyValue(order.pointsExpiresAt)
-                : "Không có"
-            )}
-          </div>
-        )}
-
-        {order.status === "cancelled" || order.status === "refunded" ? (
+        {(order.status || "").toLowerCase() === "cancelled" ||
+        (order.status || "").toLowerCase() === "refunded" ? (
           <div className="rounded-2xl border border-rose-100 bg-rose-50 p-4">
-            <h4 className="text-xs font-black text-rose-900 mb-2">
-              🚫 Thông tin hủy / hoàn tiền
+            <h4 className="text-xs font-black text-rose-900 mb-1">
+              Thông tin hủy đơn
             </h4>
-            {renderInfoRow("Người hủy", order.cancelledBy)}
-            {renderInfoRow("Lý do", order.cancelReason)}
-            {renderInfoRow(
-              "Thời gian hủy",
-              formatDateTimeValue(order.cancelledAt)
-            )}
-            {order.refundedAt &&
+            {order.cancelReason && renderInfoRow("Lý do", order.cancelReason)}
+            {order.cancelledAt &&
               renderInfoRow(
-                "Thời gian hoàn tiền",
-                formatDateTimeValue(order.refundedAt)
+                "Thời gian",
+                formatDateTimeValue(order.cancelledAt)
               )}
           </div>
         ) : null}
 
         {order.isReviewed && order.reviewInfo && (
           <div className="rounded-2xl border border-amber-100 bg-amber-50/60 p-4">
-            <h4 className="text-xs font-black text-amber-900 mb-2">
-              ⭐ Đánh giá đã gửi
+            <h4 className="text-xs font-black text-amber-900 mb-1">
+              Đánh giá của bạn
             </h4>
             {renderInfoRow(
-              "Đánh giá món",
-              `${toNumber(order.reviewInfo.productRating)} / 5`
+              "Sản phẩm",
+              `${toNumber(order.reviewInfo.productRating)} / 5 ⭐`
             )}
             {renderInfoRow(
-              "Đánh giá shipper",
-              `${toNumber(order.reviewInfo.driverRating)} / 5`
+              "Giao hàng",
+              `${toNumber(order.reviewInfo.driverRating)} / 5 ⭐`
             )}
-            {order.reviewInfo.productComment &&
-              renderInfoRow("Nhận xét món", order.reviewInfo.productComment)}
-            {order.reviewInfo.driverComment &&
-              renderInfoRow("Nhận xét shipper", order.reviewInfo.driverComment)}
           </div>
         )}
-
-        <div className="rounded-2xl border border-orange-100 bg-orange-50 p-4">
-          <div className="flex items-end justify-between gap-4">
-            <div>
-              <p className="text-[10px] font-bold text-orange-700">
-                KHÁCH CẦN THANH TOÁN
-              </p>
-              <p className="text-[9px] text-orange-500 mt-1">
-                Tiền hàng {formatCurrencyValue(subtotal)} + phí ship{" "}
-                {formatCurrencyValue(toNumber(order.shippingFee))} - giảm{" "}
-                {formatCurrencyValue(discount.totalDiscount)}
-              </p>
-            </div>
-            <span className="text-2xl font-black text-[#ee4d2d]">
-              {formatCurrencyValue(total)}
-            </span>
-          </div>
-        </div>
       </div>
     );
   };
+
 
   if (loading) {
     return (
@@ -1398,7 +1099,7 @@ export default function OrdersPage() {
             Đơn hàng của tôi
           </h2>
           <p className="text-[11px] text-stone-400 font-medium">
-            Theo dõi, thanh toán và xem đầy đủ chi tiết từng đơn
+            Theo dõi trạng thái và quản lý đơn hàng
           </p>
         </div>
         <span className="text-xs bg-orange-50 text-[#ee4d2d] font-black px-3 py-1 rounded-full border border-orange-200">
@@ -1475,11 +1176,8 @@ export default function OrdersPage() {
             const statusMeta = getStatusMeta(order);
             const displayShopName =
               order.shopName || order.storeName || "Cửa hàng";
-            const subtotal = getDisplaySubtotal(order);
             const discount = getDiscountBreakdown(order);
-            const shipping = getShippingBreakdown(order);
             const total = getOrderTotal(order);
-            const expanded = expandedOrderId === order.id;
 
             return (
               <div
@@ -1623,108 +1321,48 @@ export default function OrdersPage() {
                 ) : null}
 
                 <div className="p-4 space-y-3">
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="rounded-2xl bg-stone-50 border border-stone-100 p-3">
-                      <p className="text-[9px] text-stone-400">Tiền hàng</p>
-                      <p className="text-xs font-black text-stone-800 mt-1">
-                        {formatCurrencyValue(subtotal)}
-                      </p>
-                    </div>
-                    <div className="rounded-2xl bg-stone-50 border border-stone-100 p-3">
-                      <p className="text-[9px] text-stone-400">Phí ship</p>
-                      <p className="text-xs font-black text-stone-800 mt-1">
-                        {formatCurrencyValue(shipping.shippingFee)}
-                      </p>
-                    </div>
-                    <div className="rounded-2xl bg-emerald-50 border border-emerald-100 p-3">
-                      <p className="text-[9px] text-emerald-600">Đã giảm</p>
-                      <p className="text-xs font-black text-emerald-700 mt-1">
-                        -{formatCurrencyValue(discount.totalDiscount)}
-                      </p>
-                    </div>
-                    <div className="rounded-2xl bg-orange-50 border border-orange-100 p-3">
-                      <p className="text-[9px] text-orange-600">Khách thanh toán</p>
-                      <p className="text-xs font-black text-[#ee4d2d] mt-1">
-                        {formatCurrencyValue(total)}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2.5">
-                    {renderOrderItems(order, true)}
-                  </div>
+                  {renderOrderItems(order, true)}
 
                   {order.customerAddress || order.address ? (
-                    <div className="rounded-2xl bg-stone-50 border border-stone-100 p-3">
-                      <p className="text-[9px] text-stone-400">📍 Địa chỉ giao hàng</p>
-                      <p className="text-[11px] font-semibold text-stone-700 mt-1">
+                    <div className="flex items-start gap-2 rounded-2xl bg-stone-50 border border-stone-100 px-3 py-2.5">
+                      <span className="text-sm shrink-0">📍</span>
+                      <p className="text-[11px] font-medium text-stone-600 line-clamp-2">
                         {order.customerAddress || order.address}
                       </p>
                     </div>
                   ) : null}
 
-                  <div className="flex flex-wrap gap-1.5">
-                    {order.shopVoucherCode && (
-                      <span className="text-[9px] bg-emerald-50 text-emerald-700 border border-emerald-100 px-2 py-1 rounded-full font-bold">
-                        🎟️ {order.shopVoucherCode} -
-                        {formatCurrencyValue(
-                          toNumber(order.shopVoucherDiscount)
-                        )}
-                      </span>
-                    )}
-                    {order.shippingVoucherCode && (
-                      <span className="text-[9px] bg-blue-50 text-blue-700 border border-blue-100 px-2 py-1 rounded-full font-bold">
-                        🛵 {order.shippingVoucherCode} -
-                        {formatCurrencyValue(
-                          toNumber(order.shippingVoucherDiscount)
-                        )}
-                      </span>
-                    )}
-                    {order.isRaining && (
-                      <span className="text-[9px] bg-sky-50 text-sky-700 border border-sky-100 px-2 py-1 rounded-full font-bold">
-                        🌧️ Trời mưa
-                      </span>
-                    )}
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setExpandedOrderId((prev) =>
-                        prev === order.id ? null : order.id
-                      )
-                    }
-                    className="w-full rounded-2xl border border-stone-200 bg-white hover:bg-stone-50 text-stone-700 font-bold py-2.5 text-xs transition cursor-pointer"
-                  >
-                    {expanded
-                      ? "Thu gọn chi tiết ▲"
-                      : "Xem đầy đủ thông tin đơn hàng ▼"}
-                  </button>
-
-                  {expanded && (
-                    <div className="pt-1 border-t border-stone-100">
-                      {renderOrderDetailContent(order)}
+                  <div className="flex items-end justify-between gap-4 pt-1">
+                    <div className="min-w-0">
+                      <p className="text-[9px] uppercase tracking-wide text-stone-400 font-bold">
+                        {getPaymentLabel(order.paymentMethod)}
+                      </p>
+                      {discount.totalDiscount > 0 && (
+                        <p className="text-[10px] text-emerald-600 font-semibold mt-0.5">
+                          Đã giảm {formatCurrencyValue(discount.totalDiscount)}
+                        </p>
+                      )}
                     </div>
-                  )}
+
+                    <div className="text-right shrink-0">
+                      <p className="text-[9px] text-stone-400 font-bold">
+                        Tổng thanh toán
+                      </p>
+                      <p className="text-lg font-black text-[#ee4d2d]">
+                        {formatCurrencyValue(total)}
+                      </p>
+                    </div>
+                  </div>
                 </div>
 
-                <div className="bg-stone-50 px-4 py-3 border-t border-stone-100 flex items-center justify-between gap-2 flex-wrap">
-                  <div className="text-[10px] text-stone-400 font-medium">
-                    <div>{getPaymentLabel(order.paymentMethod)}</div>
-                    {order.paymentCode && (
-                      <div className="font-mono mt-0.5">
-                        {order.paymentCode}
-                      </div>
-                    )}
-                  </div>
-
+                <div className="bg-stone-50 px-4 py-3 border-t border-stone-100">
                   <div className="flex items-center gap-2 flex-wrap justify-end">
                     <button
                       type="button"
                       onClick={() => setDetailOrder(order)}
                       className="bg-white border border-stone-300 hover:border-orange-300 text-stone-700 font-bold px-3 py-1.5 rounded-xl text-xs transition active:scale-95 cursor-pointer shadow-sm hover:text-[#ee4d2d]"
                     >
-                      📋 Chi tiết
+                      Chi tiết
                     </button>
 
                     {isUnpaid && (
@@ -1735,7 +1373,7 @@ export default function OrdersPage() {
                         }
                         className="bg-gradient-to-r from-red-600 to-orange-500 hover:opacity-90 text-white font-extrabold px-4 py-2 rounded-xl text-xs transition active:scale-95 cursor-pointer shadow-md shadow-red-500/20"
                       >
-                        💳 Thanh toán
+                        Thanh toán
                       </button>
                     )}
 
@@ -1749,7 +1387,7 @@ export default function OrdersPage() {
                         }}
                         className="bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 font-bold px-3 py-1.5 rounded-xl text-xs transition active:scale-95 cursor-pointer"
                       >
-                        🚫 Hủy đơn
+                        Hủy đơn
                       </button>
                     )}
 
@@ -1767,7 +1405,7 @@ export default function OrdersPage() {
                           }}
                           className="bg-amber-500 hover:bg-amber-600 text-white font-bold px-3.5 py-1.5 rounded-xl text-xs transition active:scale-95 cursor-pointer"
                         >
-                          ⭐ Đánh giá
+                          Đánh giá
                         </button>
                       ))}
 
@@ -1776,7 +1414,7 @@ export default function OrdersPage() {
                       onClick={() => handleReorder(order)}
                       className="bg-white border border-stone-300 hover:border-orange-300 text-stone-700 font-bold px-3 py-1.5 rounded-xl text-xs transition active:scale-95 cursor-pointer hover:text-[#ee4d2d]"
                     >
-                      🔄 Đặt lại
+                      Đặt lại
                     </button>
                   </div>
                 </div>
