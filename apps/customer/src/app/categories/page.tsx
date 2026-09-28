@@ -8,10 +8,17 @@ import {
   useRef,
 } from "react";
 import { useCartStore } from "@/store/useCartStore";
-import { db } from "@cho-online/firebase";
+import { auth, db } from "@cho-online/firebase";
+import { onAuthStateChanged } from "firebase/auth";
 import {
   collection,
+  doc,
+  getDoc,
   getDocs,
+  query,
+  serverTimestamp,
+  setDoc,
+  where,
 } from "firebase/firestore";
 import ProductDetailModal from "@/components/ProductDetailModal";
 import ShopDetailModal from "@/components/ShopDetailModal";
@@ -124,6 +131,38 @@ interface Voucher {
   isSystemCreated?: boolean;
   scope?: "PLATFORM" | "MERCHANT";
 }
+
+const PRODUCT_RENDER_BATCH = 30;
+const FLASH_RENDER_LIMIT = 12;
+
+type LocationToast = {
+  title: string;
+  message: string;
+  type: "success" | "warning" | "info";
+};
+
+const normalizeRegionText = (value: unknown): string => {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "D")
+    .toLowerCase()
+    .trim();
+};
+
+const isHaTinhAddress = (value: unknown): boolean => {
+  return normalizeRegionText(value).includes("ha tinh");
+};
+
+const toNullableNumber = (value: unknown): number | null => {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : null;
+};
 
 // 🎯 TỪ KHÓA TÌM KIẾM HOT
 const HOT_KEYWORDS = [
@@ -354,49 +393,44 @@ export default function CategoriesPage() {
   const [searchHistory, setSearchHistory] = useState<string[]>([]);
   const searchRef = useRef<HTMLDivElement>(null);
 
-  const [userInfo, setUserInfo] = useState<UserLocation>(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("user_shipping_info");
-
-      if (saved) {
-        try {
-          const parsed = JSON.parse(saved);
-
-          return {
-            customerName:
-              parsed.customerName ||
-              parsed.name ||
-              "Khách Hàng",
-            customerPhone:
-              parsed.customerPhone ||
-              parsed.phone ||
-              "0987654321",
-            address:
-              parsed.address ||
-              "45 Phan Đình Phùng, TP Hà Tĩnh",
-            lat:
-              parsed.location?.latitude ??
-              parsed.lat ??
-              18.3445,
-            lng:
-              parsed.location?.longitude ??
-              parsed.lng ??
-              105.8978,
-          };
-        } catch (error) {
-          console.warn("Không đọc được user_shipping_info:", error);
-        }
-      }
-    }
-
-    return {
-      customerName: "Khách Hàng",
-      customerPhone: "0987654321",
-      address: "45 Phan Đình Phùng, TP Hà Tĩnh",
-      lat: 18.3445,
-      lng: 105.8978,
-    };
+  const [userInfo, setUserInfo] = useState<UserLocation>({
+    customerName: "Khách Hàng",
+    customerPhone: "",
+    address: "",
+    lat: null,
+    lng: null,
   });
+
+  const [isLocating, setIsLocating] = useState(false);
+
+  const [
+    isUserProfileResolved,
+    setIsUserProfileResolved,
+  ] = useState(false);
+
+  const [
+    serviceAreaStatus,
+    setServiceAreaStatus,
+  ] = useState<
+    "unknown" | "checking" | "supported" | "unsupported"
+  >("unknown");
+
+  const [
+    visibleProductCount,
+    setVisibleProductCount,
+  ] = useState(PRODUCT_RENDER_BATCH);
+
+  const [locationToast, setLocationToast] =
+    useState<LocationToast | null>(null);
+
+  const activeUserDocIdRef = useRef<string | null>(null);
+  const autoLocatedAddressRef = useRef("");
+  const autoLocationAttemptedRef = useRef(false);
+  const serviceAreaCheckedKeyRef = useRef("");
+  const locationToastTimerRef = useRef<number | null>(null);
+
+  const isOutsideServiceArea =
+    serviceAreaStatus === "unsupported";
 
   useEffect(() => {
     setIsMounted(true);
@@ -468,12 +502,832 @@ export default function CategoriesPage() {
     };
   }, []);
 
-  // Đồng bộ địa chỉ giao hàng vào localStorage.
+  const showLocationToast = useCallback(
+    (
+      title: string,
+      message: string,
+      type: LocationToast["type"] = "info"
+    ) => {
+      setLocationToast({ title, message, type });
+
+      if (locationToastTimerRef.current !== null) {
+        window.clearTimeout(locationToastTimerRef.current);
+      }
+
+      locationToastTimerRef.current = window.setTimeout(() => {
+        setLocationToast(null);
+        locationToastTimerRef.current = null;
+      }, 3500);
+    },
+    []
+  );
+
   useEffect(() => {
+    return () => {
+      if (locationToastTimerRef.current !== null) {
+        window.clearTimeout(locationToastTimerRef.current);
+      }
+    };
+  }, []);
+
+  const readLocalShippingInfo = useCallback((): UserLocation | null => {
+    if (typeof window === "undefined") return null;
+
+    try {
+      const raw = localStorage.getItem("user_shipping_info");
+      if (!raw) return null;
+
+      const parsed = JSON.parse(raw);
+      const location =
+        parsed?.location && typeof parsed.location === "object"
+          ? parsed.location
+          : {};
+
+      return {
+        customerName:
+          String(
+            parsed.customerName ??
+              parsed.name ??
+              "Khách Hàng"
+          ).trim() || "Khách Hàng",
+        customerPhone: String(
+          parsed.customerPhone ??
+            parsed.phone ??
+            ""
+        ).trim(),
+        address: String(
+          parsed.address ??
+            parsed.streetAddress ??
+            location.address ??
+            ""
+        ).trim(),
+        lat: toNullableNumber(
+          parsed.lat ??
+            parsed.latitude ??
+            location.lat ??
+            location.latitude
+        ),
+        lng: toNullableNumber(
+          parsed.lng ??
+            parsed.longitude ??
+            location.lng ??
+            location.longitude
+        ),
+      };
+    } catch (error) {
+      console.warn("Không đọc được user_shipping_info:", error);
+      return null;
+    }
+  }, []);
+
+  const applyUserLocationData = useCallback(
+    (
+      data: Record<string, any>,
+      documentId?: string,
+      fallbackPhone = ""
+    ) => {
+      if (documentId) {
+        activeUserDocIdRef.current = documentId;
+      }
+
+      const location =
+        data?.location && typeof data.location === "object"
+          ? data.location
+          : {};
+
+      const address = String(
+        data.address ??
+          data.streetAddress ??
+          data.shippingAddress ??
+          data.deliveryAddress ??
+          data.addressDetails?.streetAddress ??
+          location.address ??
+          ""
+      ).trim();
+
+      const phone = String(
+        data.phone ??
+          data.phoneNumber ??
+          data.customerPhone ??
+          fallbackPhone ??
+          ""
+      ).trim();
+
+      setUserInfo((prev) => ({
+        ...prev,
+        customerName:
+          data.fullName ||
+          data.name ||
+          data.customerName ||
+          prev.customerName,
+        customerPhone: phone || prev.customerPhone,
+        address: address || prev.address,
+        lat:
+          toNullableNumber(
+            data.lat ??
+              data.latitude ??
+              location.lat ??
+              location.latitude
+          ) ?? prev.lat,
+        lng:
+          toNullableNumber(
+            data.lng ??
+              data.longitude ??
+              location.lng ??
+              location.longitude
+          ) ?? prev.lng,
+      }));
+
+      if (phone && typeof window !== "undefined") {
+        try {
+          localStorage.setItem("user_phone", phone);
+        } catch {
+          // Storage có thể bị chặn ở chế độ riêng tư.
+        }
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const localInfo = readLocalShippingInfo();
+    if (localInfo) {
+      setUserInfo((prev) => ({
+        ...prev,
+        ...localInfo,
+      }));
+    }
+
+    const findUserByField = async (
+      field: string,
+      value: string
+    ): Promise<{ id: string; data: Record<string, any> } | null> => {
+      if (!value) return null;
+
+      try {
+        const snapshot = await getDocs(
+          query(
+            collection(db, "users"),
+            where(field, "==", value)
+          )
+        );
+
+        if (cancelled || snapshot.empty) return null;
+
+        const first = snapshot.docs[0];
+        return {
+          id: first.id,
+          data: first.data(),
+        };
+      } catch (error) {
+        console.warn(
+          `Không tìm được user theo ${field}:`,
+          error
+        );
+        return null;
+      }
+    };
+
+    const phoneVariants = (phone: string): string[] => {
+      const cleaned = String(phone || "")
+        .replace(/\s+/g, "")
+        .trim();
+
+      if (!cleaned) return [];
+
+      const values = new Set<string>([cleaned]);
+
+      if (cleaned.startsWith("+84")) {
+        values.add(`0${cleaned.slice(3)}`);
+      }
+
+      if (cleaned.startsWith("0")) {
+        values.add(`+84${cleaned.slice(1)}`);
+      }
+
+      return Array.from(values);
+    };
+
+    const unsubscribe = onAuthStateChanged(
+      auth,
+      async (firebaseUser) => {
+        try {
+          if (!firebaseUser) return;
+
+          const localPhone = String(
+            localStorage.getItem("user_phone") || ""
+          ).trim();
+
+          const authPhone = String(
+            firebaseUser.phoneNumber || ""
+          ).trim();
+
+          if (firebaseUser.uid) {
+            try {
+              const userRef = doc(
+                db,
+                "users",
+                firebaseUser.uid
+              );
+
+              const userSnap = await getDoc(userRef);
+
+              if (userSnap.exists()) {
+                if (!cancelled) {
+                  applyUserLocationData(
+                    userSnap.data(),
+                    userSnap.id,
+                    authPhone || localPhone
+                  );
+                }
+                return;
+              }
+            } catch (error) {
+              console.warn(
+                "Không đọc được users/{uid}:",
+                error
+              );
+            }
+
+            const byUid = await findUserByField(
+              "uid",
+              firebaseUser.uid
+            );
+
+            if (byUid) {
+              if (!cancelled) {
+                applyUserLocationData(
+                  byUid.data,
+                  byUid.id,
+                  authPhone || localPhone
+                );
+              }
+              return;
+            }
+          }
+
+          const candidates = new Set<string>([
+            ...phoneVariants(authPhone),
+            ...phoneVariants(localPhone),
+          ]);
+
+          for (const phone of candidates) {
+            const byPhone = await findUserByField(
+              "phone",
+              phone
+            );
+
+            if (byPhone) {
+              if (!cancelled) {
+                applyUserLocationData(
+                  byPhone.data,
+                  byPhone.id,
+                  phone
+                );
+              }
+              return;
+            }
+
+            const byPhoneNumber = await findUserByField(
+              "phoneNumber",
+              phone
+            );
+
+            if (byPhoneNumber) {
+              if (!cancelled) {
+                applyUserLocationData(
+                  byPhoneNumber.data,
+                  byPhoneNumber.id,
+                  phone
+                );
+              }
+              return;
+            }
+          }
+
+          if (firebaseUser.email) {
+            const byEmail = await findUserByField(
+              "email",
+              firebaseUser.email
+            );
+
+            if (byEmail && !cancelled) {
+              applyUserLocationData(
+                byEmail.data,
+                byEmail.id,
+                authPhone || localPhone
+              );
+            }
+          }
+        } catch (error) {
+          console.error(
+            "Lỗi tải địa chỉ tài khoản:",
+            error
+          );
+        } finally {
+          if (!cancelled) {
+            setIsUserProfileResolved(true);
+          }
+        }
+      }
+    );
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [
+    applyUserLocationData,
+    readLocalShippingInfo,
+  ]);
+
+  const geocodeAddress = useCallback(
+    async (
+      address: string
+    ): Promise<{ lat: number; lng: number } | null> => {
+      if (!address || address.trim().length < 3) {
+        return null;
+      }
+
+      try {
+        const response = await fetch(
+          `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
+            address
+          )}&limit=1&accept-language=vi`
+        );
+
+        if (!response.ok) return null;
+
+        const data = await response.json();
+        if (!Array.isArray(data) || data.length === 0) {
+          return null;
+        }
+
+        const lat = Number(data[0]?.lat);
+        const lng = Number(data[0]?.lon);
+
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+          return null;
+        }
+
+        return { lat, lng };
+      } catch (error) {
+        console.warn("Geocode địa chỉ thất bại:", error);
+        return null;
+      }
+    },
+    []
+  );
+
+  const reverseGeocodeLocation = useCallback(
+    async (
+      lat: number,
+      lng: number
+    ): Promise<string | null> => {
+      try {
+        const response = await fetch(
+          `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(
+            lat
+          )}&lon=${encodeURIComponent(
+            lng
+          )}&zoom=18&addressdetails=1&accept-language=vi`
+        );
+
+        if (!response.ok) return null;
+
+        const data = await response.json();
+
+        if (
+          typeof data?.display_name === "string" &&
+          data.display_name.trim()
+        ) {
+          return data.display_name.trim();
+        }
+
+        const address = data?.address;
+        if (!address) return null;
+
+        const parts = [
+          address.house_number,
+          address.road,
+          address.suburb ||
+            address.neighbourhood ||
+            address.village,
+          address.city ||
+            address.town ||
+            address.county,
+          address.state,
+        ].filter(Boolean);
+
+        return parts.length > 0
+          ? parts.join(", ")
+          : null;
+      } catch (error) {
+        console.warn(
+          "Reverse geocode vị trí thất bại:",
+          error
+        );
+        return null;
+      }
+    },
+    []
+  );
+
+  const persistUserLocation = useCallback(
+    async (
+      address: string,
+      lat: number,
+      lng: number
+    ) => {
+      setUserInfo((prev) => ({
+        ...prev,
+        address,
+        lat,
+        lng,
+      }));
+
+      try {
+        const previousRaw =
+          localStorage.getItem("user_shipping_info");
+
+        let previous: Record<string, any> = {};
+
+        if (previousRaw) {
+          try {
+            previous = JSON.parse(previousRaw);
+          } catch {
+            previous = {};
+          }
+        }
+
+        const nextValue = {
+          ...previous,
+          customerName:
+            previous.customerName ||
+            previous.name ||
+            "Khách Hàng",
+          customerPhone:
+            previous.customerPhone ||
+            previous.phone ||
+            "",
+          address,
+          lat,
+          lng,
+          location: {
+            ...(previous.location || {}),
+            lat,
+            lng,
+            latitude: lat,
+            longitude: lng,
+            address,
+          },
+        };
+
+        localStorage.setItem(
+          "user_shipping_info",
+          JSON.stringify(nextValue)
+        );
+      } catch (error) {
+        console.warn(
+          "Không thể lưu vị trí vào localStorage:",
+          error
+        );
+      }
+
+      try {
+        const currentUser = auth.currentUser;
+
+        const userDocId =
+          activeUserDocIdRef.current ||
+          currentUser?.uid ||
+          null;
+
+        if (!userDocId) return;
+
+        await setDoc(
+          doc(db, "users", userDocId),
+          {
+            address,
+            lat,
+            lng,
+            location: {
+              lat,
+              lng,
+              latitude: lat,
+              longitude: lng,
+              address,
+            },
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+
+        activeUserDocIdRef.current = userDocId;
+      } catch (error) {
+        console.warn(
+          "Không thể đồng bộ vị trí lên Firestore:",
+          error
+        );
+      }
+    },
+    []
+  );
+
+  const getBrowserPosition = useCallback(
+    (options: PositionOptions) =>
+      new Promise<GeolocationPosition>(
+        (resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(
+            resolve,
+            reject,
+            options
+          );
+        }
+      ),
+    []
+  );
+
+  const detectCurrentLocation = useCallback(async () => {
     if (typeof window === "undefined") return;
 
-    localStorage.setItem("user_shipping_info", JSON.stringify(userInfo));
-  }, [userInfo]);
+    if (!window.isSecureContext) {
+      showLocationToast(
+        "Không thể sử dụng vị trí",
+        "Định vị chỉ hoạt động trên kết nối HTTPS an toàn.",
+        "warning"
+      );
+      return;
+    }
+
+    if (!("geolocation" in navigator)) {
+      showLocationToast(
+        "Không hỗ trợ vị trí",
+        "Trình duyệt hoặc thiết bị này không hỗ trợ định vị.",
+        "warning"
+      );
+      return;
+    }
+
+    setIsLocating(true);
+
+    try {
+      let position: GeolocationPosition;
+
+      try {
+        position = await getBrowserPosition({
+          enableHighAccuracy: true,
+          timeout: 20_000,
+          maximumAge: 30_000,
+        });
+      } catch (firstError: any) {
+        if (Number(firstError?.code) === 1) {
+          throw firstError;
+        }
+
+        position = await getBrowserPosition({
+          enableHighAccuracy: false,
+          timeout: 30_000,
+          maximumAge: 5 * 60_000,
+        });
+      }
+
+      const lat = Number(position.coords.latitude);
+      const lng = Number(position.coords.longitude);
+
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        throw new Error("INVALID_COORDINATES");
+      }
+
+      const detectedAddress =
+        await reverseGeocodeLocation(lat, lng);
+
+      const address =
+        detectedAddress || "Vị trí hiện tại";
+
+      autoLocatedAddressRef.current = address;
+
+      await persistUserLocation(
+        address,
+        lat,
+        lng
+      );
+
+      showLocationToast(
+        "Đã cập nhật vị trí 📍",
+        detectedAddress
+          ? "Địa chỉ giao hàng đã được cập nhật."
+          : "Đã lấy được tọa độ hiện tại của bạn.",
+        "success"
+      );
+    } catch (error: any) {
+      const errorCode = Number(error?.code);
+
+      if (errorCode === 1) {
+        showLocationToast(
+          "Chưa thể truy cập vị trí",
+          "Hãy cấp quyền vị trí cho trình duyệt rồi nhấn biểu tượng 📍 để thử lại.",
+          "warning"
+        );
+      } else if (errorCode === 2) {
+        showLocationToast(
+          "Không xác định được vị trí",
+          "Thiết bị chưa thể xác định vị trí. Bạn có thể nhập địa chỉ giao hàng thủ công.",
+          "warning"
+        );
+      } else if (errorCode === 3) {
+        showLocationToast(
+          "Định vị mất quá nhiều thời gian",
+          "Vui lòng thử lại hoặc nhập địa chỉ giao hàng thủ công.",
+          "warning"
+        );
+      } else {
+        showLocationToast(
+          "Không thể lấy vị trí",
+          "Vui lòng thử lại hoặc nhập địa chỉ giao hàng thủ công.",
+          "warning"
+        );
+      }
+    } finally {
+      setIsLocating(false);
+    }
+  }, [
+    getBrowserPosition,
+    persistUserLocation,
+    reverseGeocodeLocation,
+    showLocationToast,
+  ]);
+
+  useEffect(() => {
+    if (
+      typeof window === "undefined" ||
+      !isUserProfileResolved ||
+      autoLocationAttemptedRef.current
+    ) {
+      return;
+    }
+
+    if (userInfo.address?.trim()) {
+      return;
+    }
+
+    const ua = navigator.userAgent;
+
+    const isSafari =
+      /Safari/i.test(ua) &&
+      !/Chrome|CriOS|Edg|OPR|Android/i.test(ua);
+
+    autoLocationAttemptedRef.current = true;
+
+    if (isSafari) {
+      showLocationToast(
+        "Cập nhật vị trí",
+        "Nhấn biểu tượng 📍 bên cạnh địa chỉ để Safari cho phép Anvami sử dụng vị trí.",
+        "info"
+      );
+      return;
+    }
+
+    void detectCurrentLocation();
+  }, [
+    detectCurrentLocation,
+    isUserProfileResolved,
+    showLocationToast,
+    userInfo.address,
+  ]);
+
+  useEffect(() => {
+    const address = userInfo.address?.trim();
+
+    if (
+      address &&
+      autoLocatedAddressRef.current === address
+    ) {
+      autoLocatedAddressRef.current = "";
+      return;
+    }
+
+    if (!address || address.length < 3) return;
+
+    const hasValidCoordinates =
+      userInfo.lat !== null &&
+      userInfo.lat !== undefined &&
+      userInfo.lng !== null &&
+      userInfo.lng !== undefined &&
+      Number.isFinite(Number(userInfo.lat)) &&
+      Number.isFinite(Number(userInfo.lng));
+
+    if (hasValidCoordinates) return;
+
+    const timer = window.setTimeout(
+      async () => {
+        const coords =
+          await geocodeAddress(address);
+
+        if (!coords) return;
+
+        await persistUserLocation(
+          address,
+          coords.lat,
+          coords.lng
+        );
+      },
+      800
+    );
+
+    return () => window.clearTimeout(timer);
+  }, [
+    userInfo.address,
+    userInfo.lat,
+    userInfo.lng,
+    geocodeAddress,
+    persistUserLocation,
+  ]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const address =
+      userInfo.address?.trim() || "";
+
+    if (isHaTinhAddress(address)) {
+      serviceAreaCheckedKeyRef.current = "";
+      setServiceAreaStatus("supported");
+
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const lat = userInfo.lat;
+    const lng = userInfo.lng;
+
+    const hasCoordinates =
+      lat !== null &&
+      lat !== undefined &&
+      lng !== null &&
+      lng !== undefined &&
+      Number.isFinite(Number(lat)) &&
+      Number.isFinite(Number(lng));
+
+    if (!hasCoordinates) {
+      serviceAreaCheckedKeyRef.current = "";
+      setServiceAreaStatus("unknown");
+
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const normalizedLat = Number(lat);
+    const normalizedLng = Number(lng);
+
+    const coordinateKey =
+      `${normalizedLat.toFixed(5)},${normalizedLng.toFixed(5)}`;
+
+    if (
+      serviceAreaCheckedKeyRef.current === coordinateKey
+    ) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const verify = async () => {
+      setServiceAreaStatus("checking");
+
+      const resolvedAddress =
+        await reverseGeocodeLocation(
+          normalizedLat,
+          normalizedLng
+        );
+
+      if (cancelled) return;
+
+      if (resolvedAddress) {
+        serviceAreaCheckedKeyRef.current = coordinateKey;
+        setServiceAreaStatus(
+          isHaTinhAddress(resolvedAddress)
+            ? "supported"
+            : "unsupported"
+        );
+      } else {
+        setServiceAreaStatus("unknown");
+      }
+    };
+
+    void verify();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    userInfo.address,
+    userInfo.lat,
+    userInfo.lng,
+    reverseGeocodeLocation,
+  ]);
 
   const saveSearchKeyword = useCallback(
     (keyword: string) => {
@@ -1665,6 +2519,10 @@ export default function CategoriesPage() {
         : Number(userInfo.lng);
 
     const hasUserCoords =
+      userInfo.lat !== null &&
+      userInfo.lat !== undefined &&
+      userInfo.lng !== null &&
+      userInfo.lng !== undefined &&
       Number.isFinite(userLat) &&
       Number.isFinite(userLng);
 
@@ -1680,6 +2538,10 @@ export default function CategoriesPage() {
           : Number(shop.lng);
 
       const hasShopCoords =
+        shop.lat !== null &&
+        shop.lat !== undefined &&
+        shop.lng !== null &&
+        shop.lng !== undefined &&
         Number.isFinite(shopLat) &&
         Number.isFinite(shopLng);
 
@@ -1738,6 +2600,15 @@ export default function CategoriesPage() {
    */
   const handleAddToCart = useCallback(
     async (product: Product) => {
+      if (isOutsideServiceArea) {
+        showLocationToast(
+          "Khu vực chưa được hỗ trợ",
+          "Xin lỗi, hiện tại Anvami chưa hỗ trợ khu vực của bạn.",
+          "warning"
+        );
+        return;
+      }
+
       const shop = shops[product.shopId];
 
       if (!shop) {
@@ -1783,6 +2654,8 @@ export default function CategoriesPage() {
       getShopDistance,
       addItemToCart,
       checkProductDiscount,
+      isOutsideServiceArea,
+      showLocationToast,
     ]
   );
 
@@ -1843,6 +2716,28 @@ export default function CategoriesPage() {
   }, [
     products,
     checkProductDiscount,
+  ]);
+
+  const displayedActiveDeals = useMemo(
+    () => activeDeals.slice(0, FLASH_RENDER_LIMIT),
+    [activeDeals]
+  );
+
+  const displayedUpcomingDeals = useMemo(
+    () => upcomingDeals.slice(0, FLASH_RENDER_LIMIT),
+    [upcomingDeals]
+  );
+
+  useEffect(() => {
+    if (
+      activeDeals.length === 0 &&
+      upcomingDeals.length > 0
+    ) {
+      setFlashTab("upcoming");
+    }
+  }, [
+    activeDeals.length,
+    upcomingDeals.length,
   ]);
 
   const rankedProducts = useMemo(() => {
@@ -2010,6 +2905,51 @@ export default function CategoriesPage() {
     checkProductDiscount,
   ]);
 
+  const displayedProducts = useMemo(
+    () =>
+      filteredProducts.slice(
+        0,
+        visibleProductCount
+      ),
+    [
+      filteredProducts,
+      visibleProductCount,
+    ]
+  );
+
+  const remainingProducts = Math.max(
+    0,
+    filteredProducts.length -
+      visibleProductCount
+  );
+
+  const hasMoreProducts =
+    remainingProducts > 0;
+
+  const handleLoadMoreProducts =
+    useCallback(() => {
+      setVisibleProductCount(
+        (current) =>
+          Math.min(
+            current +
+              PRODUCT_RENDER_BATCH,
+            filteredProducts.length
+          )
+      );
+    }, [
+      filteredProducts.length,
+    ]);
+
+  useEffect(() => {
+    setVisibleProductCount(
+      PRODUCT_RENDER_BATCH
+    );
+  }, [
+    searchQuery,
+    activeTab,
+    quickFilter,
+  ]);
+
   /**
    * ShopDetailModal chỉ nhận sản phẩm của đúng quán.
    */
@@ -2036,6 +2976,27 @@ export default function CategoriesPage() {
 
   return (
     <div className="bg-[#f0f4f8] min-h-screen pb-24 font-sans text-slate-800">
+      {locationToast && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[100] w-[92%] max-w-md">
+          <div
+            className={`rounded-2xl px-4 py-3 shadow-xl border text-xs ${
+              locationToast.type === "success"
+                ? "bg-emerald-600 text-white border-emerald-500"
+                : locationToast.type === "warning"
+                  ? "bg-amber-500 text-white border-amber-400"
+                  : "bg-slate-900 text-white border-slate-700"
+            }`}
+          >
+            <div className="font-black">
+              {locationToast.title}
+            </div>
+            <div className="mt-0.5 opacity-90 leading-relaxed">
+              {locationToast.message}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* HEADER */}
       <div
         className={`sticky top-0 z-40 transition-all duration-300 shadow-md ${showBannerOnScroll
@@ -2055,22 +3016,43 @@ export default function CategoriesPage() {
                   Giao hàng đến:
                 </span>
 
-                <input
-                  type="text"
-                  value={userInfo.address}
-                  onChange={(event) =>
-                    setUserInfo(
-                      (prev) => ({
-                        ...prev,
-                        address:
-                          event.target
-                            .value,
-                      })
-                    )
-                  }
-                  placeholder="Nhập địa chỉ giao hàng..."
-                  className="bg-transparent text-white font-bold text-xs focus:outline-none w-full truncate placeholder:text-white/70"
-                />
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="text"
+                    value={userInfo.address}
+                    onChange={(event) => {
+                      autoLocatedAddressRef.current = "";
+
+                      setUserInfo(
+                        (prev) => ({
+                          ...prev,
+                          address: event.target.value,
+                          lat: null,
+                          lng: null,
+                        })
+                      );
+                    }}
+                    placeholder={
+                      isLocating
+                        ? "Đang xác định vị trí..."
+                        : "Nhập địa chỉ giao hàng..."
+                    }
+                    className="bg-transparent text-white font-bold text-xs focus:outline-none min-w-0 flex-1 truncate placeholder:text-white/70"
+                  />
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void detectCurrentLocation()
+                    }
+                    disabled={isLocating}
+                    title="Sử dụng vị trí hiện tại"
+                    aria-label="Sử dụng vị trí hiện tại"
+                    className="shrink-0 w-7 h-7 flex items-center justify-center rounded-full bg-white/15 hover:bg-white/25 transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    {isLocating ? "⏳" : "📍"}
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -2238,6 +3220,26 @@ export default function CategoriesPage() {
         </div>
       </div>
 
+      {isOutsideServiceArea && (
+        <div className="mx-3 mt-3 mb-2 rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 via-white to-orange-50 p-4 shadow-sm">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center text-xl shrink-0">
+              📍
+            </div>
+
+            <div className="min-w-0 flex-1">
+              <h3 className="text-sm font-black text-slate-900">
+                Xin lỗi, hiện tại Anvami chưa hỗ trợ khu vực của bạn.
+              </h3>
+
+              <p className="text-[11px] text-slate-500 leading-relaxed mt-1">
+                Anvami hiện đang phục vụ tại Hà Tĩnh. Bạn có thể nhập lại địa chỉ giao hàng hoặc nhấn biểu tượng 📍 để kiểm tra vị trí hiện tại.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 🎟️ KHO VOUCHER */}
       {!searchQuery &&
         vouchers.length > 0 && (
@@ -2369,7 +3371,7 @@ export default function CategoriesPage() {
             </div>
 
             <div className="px-3 mb-2 text-[8px] text-slate-500 font-medium">
-              ✨ Những shop nổi bật được Anvami ưu tiên giới thiệu tới khách hàng.
+              ✨ Mua càng nhiều giảm càng nhiều
             </div>
 
             <div className="flex gap-2 overflow-x-auto no-scrollbar px-3 py-0.5">
@@ -2789,8 +3791,8 @@ export default function CategoriesPage() {
             <div className="flex gap-2.5 overflow-x-auto no-scrollbar px-3 pt-2">
               {(flashTab ===
                 "active"
-                ? activeDeals
-                : upcomingDeals
+                ? displayedActiveDeals
+                : displayedUpcomingDeals
               ).map((item) => {
                 const {
                   currentPrice,
@@ -2885,6 +3887,7 @@ export default function CategoriesPage() {
 
                       <button
                         type="button"
+                        disabled={isOutsideServiceArea}
                         onClick={(
                           event
                         ) => {
@@ -2894,9 +3897,15 @@ export default function CategoriesPage() {
                             item
                           );
                         }}
-                        className="w-full bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-bold py-1 rounded-lg transition active:scale-95 shadow-2xs flex items-center justify-center gap-1 cursor-pointer"
+                        className={`w-full text-white text-[10px] font-bold py-1 rounded-lg transition active:scale-95 shadow-2xs flex items-center justify-center gap-1 ${
+                          isOutsideServiceArea
+                            ? "bg-slate-300 text-slate-500 cursor-not-allowed"
+                            : "bg-blue-600 hover:bg-blue-700 cursor-pointer"
+                        }`}
                       >
-                        + Chọn mua
+                        {isOutsideServiceArea
+                          ? "Ngoài khu vực"
+                          : "+ Chọn mua"}
                       </button>
                     </div>
                   </div>
@@ -2985,7 +3994,7 @@ export default function CategoriesPage() {
         </div>
       ) : (
         <div className="p-2 grid grid-cols-2 gap-2">
-          {filteredProducts.map(
+          {displayedProducts.map(
             (product) => {
               const shop =
                 shops[product.shopId];
@@ -3157,7 +4166,8 @@ export default function CategoriesPage() {
                         disabled={
                           !shop ||
                           shop.isOpen ===
-                          false
+                          false ||
+                          isOutsideServiceArea
                         }
                         onClick={(
                           event
@@ -3170,10 +4180,11 @@ export default function CategoriesPage() {
                         }}
                         className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed active:scale-95 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg transition shadow-2xs cursor-pointer shrink-0"
                       >
-                        {shop?.isOpen ===
-                          false
-                          ? "Tạm đóng"
-                          : "+ Chọn"}
+                        {isOutsideServiceArea
+                          ? "Ngoài khu vực"
+                          : shop?.isOpen === false
+                            ? "Tạm đóng"
+                            : "+ Chọn"}
                       </button>
                     </div>
                   </div>
@@ -3183,6 +4194,23 @@ export default function CategoriesPage() {
           )}
         </div>
       )}
+
+      {!loading &&
+        filteredProducts.length > 0 &&
+        hasMoreProducts && (
+          <div className="px-3 pt-2 pb-6">
+            <button
+              type="button"
+              onClick={handleLoadMoreProducts}
+              className="w-full py-3.5 rounded-2xl bg-white border border-slate-200 text-slate-700 text-xs font-bold shadow-sm hover:bg-slate-50 active:scale-[0.99] transition"
+            >
+              Xem thêm sản phẩm
+              <span className="ml-1.5 text-slate-400 font-semibold">
+                ({remainingProducts})
+              </span>
+            </button>
+          </div>
+        )}
 
       {/* PRODUCT MODAL */}
       <ProductDetailModal
