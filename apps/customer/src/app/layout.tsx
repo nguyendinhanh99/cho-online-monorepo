@@ -7,7 +7,7 @@ import CustomerNotification from "@/components/CustomerNotification";
 
 // 🟢 CẬP NHẬT METADATA VÀ ICONS/FAVICON CHO CUSTOMER APP
 export const metadata: Metadata = {
-  title: "TiGo - Mua Sắm Online",
+  title: "Anvami - Mua Sắm Online",
   description: "Đặt nhanh hơn - Giá tốt hơn - Giao nhanh hơn.",
   icons: {
     icon: "/logo.png", // Đường dẫn logo trong thư mục apps/customer/public/logo.png

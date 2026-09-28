@@ -322,7 +322,7 @@ export function BottomNav() {
 
           <Link
             href="/"
-            aria-label="Khám phá Anvami"
+            aria-label="Food"
             aria-current={
               pathname === "/"
                 ? "page"
@@ -394,7 +394,7 @@ export function BottomNav() {
                 }
               `}
             >
-              Khám phá
+              Anvami Food
             </span>
           </Link>
 

@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 
 // 🟢 CẬP NHẬT METADATA, MANIFEST VÀ FAVICON CHO MERCHANT APP
 export const metadata: Metadata = {
-  title: "TiGo - Quản lý Cửa hàng",
+  title: "Anvami - Quản lý Cửa hàng",
   description: "Kênh quản lý cửa hàng Chợ Online",
   manifest: "/manifest.json",
   icons: {

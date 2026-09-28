@@ -15,8 +15,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "TiGo - Admin Dashboard",
-  description: "Trang quản trị hệ thống TiGo",
+  title: "Anvami - Admin Dashboard",
+  description: "Trang quản trị hệ thống Anvami",
   icons: {
     icon: "/logo.png",
     shortcut: "/logo.png",

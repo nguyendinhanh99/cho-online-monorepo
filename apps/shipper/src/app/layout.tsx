@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 
 // 🟢 CẬP NHẬT METADATA CÓ CHỨA ICONS / FAVICON
 export const metadata: Metadata = {
-  title: "anvami - Shipper",
+  title: "Anvami - Shipper",
   description: "Ứng dụng giao hàng của Anvami",
   icons: {
     icon: "/logo.png", // Đường dẫn đến logo trong thư mục public
