@@ -1,0 +1,109 @@
+<svg width="1200" height="2200" viewBox="0 0 1200 2200" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="pageBg" x1="600" y1="0" x2="600" y2="2200" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFF1D5"/>
+      <stop offset="0.22" stop-color="#FFF7E9"/>
+      <stop offset="0.58" stop-color="#FFFDF8"/>
+      <stop offset="1" stop-color="#FFFFFF"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="0" cy="0" r="1" gradientTransform="translate(600 170) rotate(90) scale(430 650)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF9D9"/>
+      <stop offset="1" stop-color="#FFEBC7" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="orange" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#FF8A00"/>
+      <stop offset="0.55" stop-color="#FF5A24"/>
+      <stop offset="1" stop-color="#EF3C35"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#FFD95A"/>
+      <stop offset="0.55" stop-color="#FFB11F"/>
+      <stop offset="1" stop-color="#F58A0A"/>
+    </linearGradient>
+    <filter id="soft" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="2200" fill="url(#pageBg)"/>
+  <rect width="1200" height="640" fill="url(#sun)"/>
+
+  <!-- subtle hero rays -->
+  <g opacity="0.34" transform="translate(600 180)">
+    <path d="M0 0 L-620 270 L-580 330 Z" fill="#FFD88A"/>
+    <path d="M0 0 L-520 420 L-450 465 Z" fill="#FFE5A5"/>
+    <path d="M0 0 L-330 540 L-245 560 Z" fill="#FFD88A"/>
+    <path d="M0 0 L330 540 L245 560 Z" fill="#FFD88A"/>
+    <path d="M0 0 L520 420 L450 465 Z" fill="#FFE5A5"/>
+    <path d="M0 0 L620 270 L580 330 Z" fill="#FFD88A"/>
+  </g>
+
+  <!-- top soft glows -->
+  <circle cx="180" cy="330" r="170" fill="#FFB34F" opacity="0.11" filter="url(#soft)"/>
+  <circle cx="1030" cy="310" r="180" fill="#FF6B61" opacity="0.10" filter="url(#soft)"/>
+
+  <!-- confetti -->
+  <g opacity="0.96">
+    <rect x="70" y="190" width="18" height="72" rx="9" transform="rotate(-38 70 190)" fill="#FF7A22"/>
+    <rect x="180" y="120" width="18" height="54" rx="9" transform="rotate(28 180 120)" fill="#FFCB34"/>
+    <rect x="330" y="245" width="16" height="68" rx="8" transform="rotate(-18 330 245)" fill="#F84944"/>
+    <rect x="840" y="175" width="18" height="68" rx="9" transform="rotate(24 840 175)" fill="#FF9A27"/>
+    <rect x="1030" y="240" width="18" height="65" rx="9" transform="rotate(-30 1030 240)" fill="#F84944"/>
+    <rect x="1110" y="145" width="17" height="54" rx="8" transform="rotate(35 1110 145)" fill="#FFBE27"/>
+  </g>
+
+  <!-- stars -->
+  <g fill="#FFC83D">
+    <path d="M430 175 L442 205 L472 217 L442 229 L430 259 L418 229 L388 217 L418 205 Z"/>
+    <path d="M765 140 L776 168 L804 179 L776 190 L765 218 L754 190 L726 179 L754 168 Z"/>
+    <path d="M1110 410 L1120 434 L1144 444 L1120 454 L1110 478 L1100 454 L1076 444 L1100 434 Z"/>
+    <path d="M132 860 L142 884 L166 894 L142 904 L132 928 L122 904 L98 894 L122 884 Z"/>
+  </g>
+
+  <!-- stylized gift boxes -->
+  <g transform="translate(8 405) rotate(-11)">
+    <rect x="0" y="30" width="160" height="120" rx="26" fill="url(#orange)"/>
+    <rect x="69" y="30" width="22" height="120" fill="#FFD34A"/>
+    <rect x="-10" y="20" width="180" height="36" rx="18" fill="#FF7032"/>
+    <path d="M80 22 C45 -30,15 -2,39 20 C54 34,72 28,80 22Z" fill="#FFD34A"/>
+    <path d="M80 22 C115 -30,145 -2,121 20 C106 34,88 28,80 22Z" fill="#FFD34A"/>
+  </g>
+  <g transform="translate(1030 380) rotate(12)">
+    <rect x="0" y="30" width="150" height="112" rx="24" fill="url(#orange)"/>
+    <rect x="64" y="30" width="21" height="112" fill="#FFD34A"/>
+    <rect x="-8" y="18" width="166" height="34" rx="17" fill="#FF7032"/>
+    <path d="M74 21 C44 -25,12 0,36 18 C50 29,66 27,74 21Z" fill="#FFD34A"/>
+    <path d="M74 21 C104 -25,136 0,112 18 C98 29,82 27,74 21Z" fill="#FFD34A"/>
+  </g>
+
+  <!-- coins -->
+  <g>
+    <ellipse cx="1065" cy="205" rx="46" ry="20" transform="rotate(-32 1065 205)" fill="#FFB316"/>
+    <ellipse cx="1065" cy="202" rx="34" ry="12" transform="rotate(-32 1065 202)" fill="#FFD85C"/>
+    <ellipse cx="180" cy="610" rx="45" ry="20" transform="rotate(25 180 610)" fill="#FFB316"/>
+    <ellipse cx="180" cy="607" rx="33" ry="12" transform="rotate(25 180 607)" fill="#FFD85C"/>
+    <ellipse cx="1025" cy="990" rx="42" ry="19" transform="rotate(-20 1025 990)" fill="#FFB316"/>
+    <ellipse cx="1025" cy="987" rx="31" ry="11" transform="rotate(-20 1025 987)" fill="#FFD85C"/>
+  </g>
+
+  <!-- lower decorative clouds / gifts around wheel area -->
+  <g opacity="0.72">
+    <circle cx="40" cy="1410" r="140" fill="#FFF1DC"/>
+    <circle cx="135" cy="1455" r="170" fill="#FFE7CE"/>
+    <circle cx="1120" cy="1450" r="165" fill="#FFE7CE"/>
+    <circle cx="1200" cy="1390" r="145" fill="#FFF1DC"/>
+  </g>
+  <g transform="translate(-38 1390) rotate(12)" opacity="0.98">
+    <rect x="0" y="30" width="190" height="135" rx="28" fill="url(#orange)"/>
+    <rect x="82" y="30" width="24" height="135" fill="#FFD34A"/>
+    <rect x="-12" y="17" width="214" height="42" rx="21" fill="#FF7040"/>
+  </g>
+  <g transform="translate(1060 1380) rotate(-12)" opacity="0.98">
+    <rect x="0" y="30" width="190" height="135" rx="28" fill="url(#orange)"/>
+    <rect x="82" y="30" width="24" height="135" fill="#FFD34A"/>
+    <rect x="-12" y="17" width="214" height="42" rx="21" fill="#FF7040"/>
+  </g>
+
+  <!-- bottom fade -->
+  <rect y="1740" width="1200" height="460" fill="url(#pageBg)" opacity="0.72"/>
+</svg>

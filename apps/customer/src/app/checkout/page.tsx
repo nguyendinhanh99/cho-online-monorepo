@@ -17,7 +17,6 @@ import { useCartStore } from "@/store/useCartStore";
 
 const MAX_SHIPPING_FEE = 50000;
 const MAX_COD_THRESHOLD = 300000;
-const POINTS_EXPIRE_DAYS = 90;
 
 interface ShippingOptions {
   distanceKm: number;
@@ -146,10 +145,89 @@ const calculatePeakHourFee = (orderTime = new Date()): number => {
   return 0;
 };
 
-const calculateEarnedPoints = (subTotal: number): number => {
-  if (subTotal <= 0) return 0;
+type RewardTier =
+  | "SMALL"
+  | "MEDIUM"
+  | "LARGE"
+  | "VERY_LARGE";
 
-  return Math.floor(subTotal / 1000);
+const REWARD_TIER_META: Record<
+  RewardTier,
+  {
+    label: string;
+    description: string;
+  }
+> = {
+  SMALL: {
+    label: "Cơ hội tiêu chuẩn",
+    description:
+      "Đơn nhỏ vẫn luôn có quà khi quay.",
+  },
+  MEDIUM: {
+    label: "Cơ hội tăng nhẹ",
+    description:
+      "Độ lớn đơn hàng giúp tăng nhẹ cơ hội nhận phần thưởng giá trị cao.",
+  },
+  LARGE: {
+    label: "Cơ hội cao",
+    description:
+      "Đơn lớn được ưu tiên hơn ở nhóm phần thưởng giá trị cao.",
+  },
+  VERY_LARGE: {
+    label: "Cơ hội cao nhất",
+    description:
+      "Đơn rất lớn đạt mức ưu tiên cao nhất của vòng quay.",
+  },
+};
+
+const getOrderRewardTier = (
+  quantity: number,
+  subtotal: number
+): RewardTier => {
+  const safeQuantity = Math.max(
+    0,
+    Number(quantity) || 0
+  );
+
+  const safeSubtotal = Math.max(
+    0,
+    Number(subtotal) || 0
+  );
+
+  const quantityScore =
+    safeQuantity >= 8
+      ? 3
+      : safeQuantity >= 5
+        ? 2
+        : safeQuantity >= 3
+          ? 1
+          : 0;
+
+  const valueScore =
+    safeSubtotal >= 350000
+      ? 3
+      : safeSubtotal >= 200000
+        ? 2
+        : safeSubtotal >= 100000
+          ? 1
+          : 0;
+
+  const score =
+    quantityScore + valueScore;
+
+  if (score >= 5) {
+    return "VERY_LARGE";
+  }
+
+  if (score >= 3) {
+    return "LARGE";
+  }
+
+  if (score >= 1) {
+    return "MEDIUM";
+  }
+
+  return "SMALL";
 };
 
 interface Voucher {
@@ -1345,6 +1423,42 @@ export default function CheckoutPage() {
 
   /**
    * ============================================================
+   * ĐỘ LỚN ĐƠN HÀNG / VÒNG QUAY
+   * ============================================================
+   *
+   * Dùng đồng thời:
+   * - số lượng món
+   * - giá trị tiền hàng
+   *
+   * Chỉ lưu hạng xác suất vào order.
+   * Kết quả quay được quyết định ở API server sau khi đơn hoàn thành.
+   */
+  const totalOrderQuantity =
+    checkoutItems.reduce(
+      (sum, item: any) =>
+        sum +
+        Math.max(
+          0,
+          Number(
+            item.quantity || 0
+          )
+        ),
+      0
+    );
+
+  const rewardTier =
+    getOrderRewardTier(
+      totalOrderQuantity,
+      rawTotalPrice
+    );
+
+  const rewardTierMeta =
+    REWARD_TIER_META[
+      rewardTier
+    ];
+
+  /**
+   * ============================================================
    * TỔNG GIÁ GỐC
    * ============================================================
    */
@@ -1600,12 +1714,11 @@ export default function CheckoutPage() {
    * ============================================================
    * POINTS
    * ============================================================
+   *
+   * Điểm cũ vẫn có thể dùng để giảm giá.
+   * Không cộng điểm cố định khi tạo đơn nữa.
+   * Phần thưởng mới đến từ vòng quay sau khi đơn hoàn thành.
    */
-  const earnedPoints =
-    calculateEarnedPoints(
-      rawTotalPrice
-    );
-
   const tempTotal =
     Math.max(
       0,
@@ -2206,19 +2319,6 @@ export default function CheckoutPage() {
 
       /**
        * ========================================================
-       * POINT EXPIRY
-       * ========================================================
-       */
-      const pointsExpiryDate =
-        new Date();
-
-      pointsExpiryDate.setDate(
-        pointsExpiryDate.getDate() +
-          POINTS_EXPIRE_DAYS
-      );
-
-      /**
-       * ========================================================
        * ORDER PAYLOAD
        * ========================================================
        */
@@ -2333,15 +2433,34 @@ export default function CheckoutPage() {
 
         /**
          * POINTS
+         *
+         * Chỉ lưu số điểm đã dùng.
+         * Không phát điểm cố định khi tạo đơn.
          */
         pointsUsed:
           orderPointsUsed,
 
-        pointsEarned:
-          earnedPoints,
+        pointsEarned: 0,
 
-        pointsExpiresAt:
-          pointsExpiryDate.toISOString(),
+        /**
+         * REWARD SPIN
+         *
+         * Một đơn hợp lệ sẽ có 1 lượt quay,
+         * nhưng API chỉ cho quay khi status = completed/delivered.
+         */
+        rewardSpin: {
+          eligible: true,
+          used: false,
+          tier:
+            rewardTier,
+          quantity:
+            totalOrderQuantity,
+          orderValue:
+            rawTotalPrice,
+          version:
+            "ORDER_SIZE_VALUE_V1",
+          result: null,
+        },
 
         /**
          * ROUTE
@@ -2586,44 +2705,34 @@ export default function CheckoutPage() {
 
       /**
        * ========================================================
-       * UPDATE USER POINTS
+       * DEDUCT USED POINTS ONLY
        * ========================================================
+       *
+       * Điểm thưởng không còn được cộng ở checkout.
+       * Nếu khách dùng điểm cũ, chỉ trừ đúng số điểm đã sử dụng.
        */
-      const userRef = doc(
-        db,
-        "users",
-        user.uid
-      );
+      if (
+        orderPointsUsed > 0
+      ) {
+        const userRef = doc(
+          db,
+          "users",
+          user.uid
+        );
 
-      const pointsChange =
-        earnedPoints -
-        orderPointsUsed;
+        await updateDoc(
+          userRef,
+          {
+            points:
+              increment(
+                -orderPointsUsed
+              ),
 
-      await updateDoc(
-        userRef,
-        {
-          points:
-            increment(
-              pointsChange
-            ),
-
-          pointsUpdatedAt:
-            new Date().toISOString(),
-        }
-      ).catch(
-        async () => {
-          await updateDoc(
-            userRef,
-            {
-              points:
-                Math.max(
-                  0,
-                  pointsChange
-                ),
-            }
-          );
-        }
-      );
+            pointsUpdatedAt:
+              new Date().toISOString(),
+          }
+        );
+      }
 
       /**
        * ========================================================
@@ -2691,7 +2800,7 @@ export default function CheckoutPage() {
         );
       } else {
         alert(
-          `🎉 Đặt hàng thành công!\n🎁 Bạn nhận được +${earnedPoints} điểm thưởng.`
+          `🎉 Đặt hàng thành công!\n🎡 Hoàn thành đơn để nhận 1 lượt quay Anvami.`
         );
 
         router.push(
@@ -3416,31 +3525,48 @@ export default function CheckoutPage() {
         {/* POINTS */}
         {/* ==================================================== */}
 
-        <section className="bg-gradient-to-br from-emerald-50 to-teal-50/50 border border-emerald-100 rounded-2xl p-4 space-y-2.5">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="text-lg">
-                🎁
+        <section className="bg-gradient-to-br from-orange-50 to-amber-50/60 border border-orange-100 rounded-2xl p-4 space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-2.5 min-w-0">
+              <span className="text-xl leading-none mt-0.5">
+                🎡
               </span>
 
-              <div>
-                <h3 className="text-xs font-bold text-emerald-950">
-                  Điểm thưởng tích lũy
+              <div className="min-w-0">
+                <h3 className="text-xs font-black text-orange-950">
+                  Vòng quay sau đơn hàng
                 </h3>
 
-                <p className="text-[10px] text-emerald-700 font-medium">
-                  Tích +{earnedPoints} điểm (Hạn dùng{" "}
-                  {
-                    POINTS_EXPIRE_DAYS
-                  }{" "}
-                  ngày)
+                <p className="mt-1 text-[10px] leading-relaxed text-orange-700 font-medium">
+                  Hoàn thành đơn để nhận 1 lượt quay. Đơn càng lớn,
+                  cơ hội nhận phần thưởng giá trị cao càng tăng.
                 </p>
               </div>
             </div>
 
-            <span className="bg-emerald-600 text-white text-[10px] font-black px-2.5 py-1 rounded-full shadow-2xs">
-              {userPoints} Điểm
+            <span className="shrink-0 bg-[#ee4d2d] text-white text-[9px] font-black px-2.5 py-1 rounded-full shadow-2xs">
+              {rewardTierMeta.label}
             </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded-xl bg-white/80 border border-orange-100 px-3 py-2">
+              <p className="text-[9px] uppercase tracking-wide text-stone-400 font-bold">
+                Độ lớn đơn
+              </p>
+              <p className="mt-0.5 text-[11px] font-black text-stone-700">
+                {totalOrderQuantity} món • {formatCurrency(rawTotalPrice)}
+              </p>
+            </div>
+
+            <div className="rounded-xl bg-white/80 border border-orange-100 px-3 py-2">
+              <p className="text-[9px] uppercase tracking-wide text-stone-400 font-bold">
+                Điểm hiện có
+              </p>
+              <p className="mt-0.5 text-[11px] font-black text-emerald-700">
+                {userPoints} điểm
+              </p>
+            </div>
           </div>
 
           {userPoints > 0 ? (
