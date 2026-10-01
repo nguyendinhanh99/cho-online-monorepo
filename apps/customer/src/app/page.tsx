@@ -1540,6 +1540,18 @@ export default function HomePage() {
     useRef("");
 
   /**
+   * Deep-link quán được chia sẻ.
+   *
+   * Ví dụ:
+   * https://anvami.com/?shop=MS43665
+   *
+   * Ref này giúp tránh mở lại cùng một modal nhiều lần
+   * khi các state khác của HomePage cập nhật.
+   */
+  const sharedShopKeyRef =
+    useRef<string | null>(null);
+
+  /**
    * ==========================================================
    * CART SELECTORS
    * ==========================================================
@@ -4715,6 +4727,224 @@ export default function HomePage() {
       userInfo.lng,
       shops,
       shopCoordinates,
+    ]);
+
+  /**
+   * ==========================================================
+   * SHOP SHARE DEEP LINK
+   * ==========================================================
+   *
+   * Link chia sẻ từ ShopDetailModal:
+   *
+   * https://anvami.com/?shop=MS43665
+   *
+   * Hoặc fallback bằng Firestore merchant document id.
+   *
+   * Khi người nhận mở link:
+   * 1. HomePage tải danh sách quán.
+   * 2. Tìm quán theo merchantCode hoặc id.
+   * 3. Tự mở ShopDetailModal.
+   *
+   * Không dùng useSearchParams nên không cần bọc Suspense.
+   */
+
+  useEffect(() => {
+    if (
+      typeof window === "undefined" ||
+      loading
+    ) {
+      return;
+    }
+
+    const params =
+      new URLSearchParams(
+        window.location.search
+      );
+
+    const rawSharedShopKey =
+      String(
+        params.get("shop") || ""
+      ).trim();
+
+    /**
+     * Tương thích cả link cũ từng bị Web Share gộp thêm nội dung:
+     *
+     * ?shop=MS85250 Xem Quán ăn hạnh phúc trên Anvami ...
+     *
+     * URLSearchParams sẽ decode %20 thành khoảng trắng,
+     * vì vậy chỉ lấy token đầu tiên làm merchantCode / shop id.
+     */
+    const sharedShopKey =
+      rawSharedShopKey
+        .split(/\s+/)[0]
+        ?.trim() || "";
+
+    if (!sharedShopKey) {
+      sharedShopKeyRef.current =
+        null;
+
+      return;
+    }
+
+    /**
+     * Deep-link hiện tại đã được xử lý.
+     * Không setSelectedShop lặp lại khi location,
+     * voucher hoặc các state khác cập nhật.
+     */
+    if (
+      sharedShopKeyRef.current ===
+      sharedShopKey
+    ) {
+      return;
+    }
+
+    const normalizedKey =
+      sharedShopKey.toLowerCase();
+
+    const targetShop =
+      Object.values(
+        shops
+      ).find((shop) => {
+        const shopId =
+          String(
+            shop.id || ""
+          )
+            .trim()
+            .toLowerCase();
+
+        const merchantCode =
+          String(
+            shop.merchantCode || ""
+          )
+            .trim()
+            .toLowerCase();
+
+        return (
+          shopId ===
+            normalizedKey ||
+          merchantCode ===
+            normalizedKey
+        );
+      });
+
+    /**
+     * Không tìm thấy quán:
+     * có thể link cũ, merchant bị khóa hoặc không thuộc F&B.
+     *
+     * Không redirect và không làm crash HomePage.
+     */
+    if (!targetShop) {
+      return;
+    }
+
+    sharedShopKeyRef.current =
+      sharedShopKey;
+
+    /**
+     * Nếu người dùng mở một link chia sẻ cũ bị dính thêm text,
+     * tự chuẩn hóa lại URL thành:
+     *
+     * ?shop=MS85250
+     */
+    if (
+      rawSharedShopKey !==
+      sharedShopKey
+    ) {
+      const cleanUrl =
+        new URL(
+          window.location.href
+        );
+
+      cleanUrl.searchParams.set(
+        "shop",
+        sharedShopKey
+      );
+
+      window.history.replaceState(
+        window.history.state,
+        "",
+        `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`
+      );
+    }
+
+    /**
+     * Đảm bảo không mở Product modal đồng thời.
+     */
+    setSelectedProduct(
+      null
+    );
+
+    setSelectedShop({
+      ...targetShop,
+
+      distance:
+        calculatedDistances[
+          targetShop.id
+        ]?.text ||
+        targetShop.distance ||
+        "2.0 km",
+    });
+  }, [
+    loading,
+    shops,
+    calculatedDistances,
+  ]);
+
+  /**
+   * Xóa ?shop= khi đóng quán.
+   *
+   * Giữ lại các query param khác nếu HomePage
+   * đang sử dụng chúng trong tương lai.
+   */
+  const clearShopDeepLink =
+    useCallback(() => {
+      if (
+        typeof window ===
+        "undefined"
+      ) {
+        return;
+      }
+
+      const url =
+        new URL(
+          window.location.href
+        );
+
+      if (
+        url.searchParams.has(
+          "shop"
+        )
+      ) {
+        url.searchParams.delete(
+          "shop"
+        );
+
+        const nextUrl =
+          `${url.pathname}${url.search}${url.hash}`;
+
+        window.history.replaceState(
+          window.history.state,
+          "",
+          nextUrl
+        );
+      }
+
+      sharedShopKeyRef.current =
+        null;
+    }, []);
+
+  /**
+   * Đóng ShopDetailModal và làm sạch deep-link.
+   */
+  const handleCloseShop =
+    useCallback(() => {
+      clearShopDeepLink();
+
+      setSelectedShop(
+        null
+      );
+    }, [
+      clearShopDeepLink,
     ]);
 
   /**
@@ -8162,10 +8392,8 @@ export default function HomePage() {
             : 20
         }
 
-        onClose={() =>
-          setSelectedShop(
-            null
-          )
+        onClose={
+          handleCloseShop
         }
 
         onAddToCart={
@@ -8175,6 +8403,13 @@ export default function HomePage() {
         onProductClick={(
           product
         ) => {
+          /**
+           * Nếu người dùng mở quán từ link chia sẻ rồi
+           * chuyển sang xem một sản phẩm, xóa ?shop=
+           * để modal quán không tự mở lại.
+           */
+          clearShopDeepLink();
+
           setSelectedShop(
             null
           );
